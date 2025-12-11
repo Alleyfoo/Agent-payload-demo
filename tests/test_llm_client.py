@@ -53,3 +53,19 @@ class TestLLMClient(TestCase):
             result = client.generate("hi")
 
         self.assertEqual(result, "Hello world")
+
+    def test_streaming_reassembles_multibyte_fragments(self):
+        emoji = " \U0001f600"
+        emoji_bytes = emoji.encode("utf-8")
+        streamed = [
+            b'{"response":"Hello',
+            b' world' + emoji_bytes[:2],
+            emoji_bytes[2:] + b'", "done": false}',
+            b'{"done": true}',
+        ]
+
+        with mock.patch("requests.post", return_value=FakeResponse(streamed)):
+            client = LLMClient(use_mock=False)
+            result = client.generate("hi")
+
+        self.assertEqual(result, f"Hello world{emoji}")
