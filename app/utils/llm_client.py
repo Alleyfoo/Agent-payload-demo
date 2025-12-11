@@ -37,17 +37,25 @@ class LLMClient:
 
         if stream:
             chunks: list[str] = []
-            for line in response.iter_lines(decode_unicode=False):
+            for line in response.iter_lines(decode_unicode=True):
                 if not line:
                     continue
-                decoded = line.decode("utf-8", errors="replace")
+
+                if isinstance(line, bytes):
+                    try:
+                        decoded_line = line.decode("utf-8")
+                    except UnicodeDecodeError:
+                        decoded_line = line.decode("utf-8", errors="replace")
+                else:
+                    decoded_line = line
+
                 try:
-                    event = json.loads(decoded)
+                    event = json.loads(decoded_line)
                 except json.JSONDecodeError:
                     continue
 
                 fragment = event.get("response")
-                if fragment:
+                if isinstance(fragment, str):
                     chunks.append(fragment)
                 if event.get("done"):
                     break
