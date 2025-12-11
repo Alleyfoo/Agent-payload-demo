@@ -40,3 +40,16 @@ class TestLLMClient(TestCase):
 
         mocked.assert_called_once()
         self.assertEqual(result, "Hello world")
+
+    def test_streaming_ignores_decode_errors(self):
+        streamed = [
+            b'{"response":"Hello"}\x80',
+            b'{"response":" world"}\n',
+            b'{"done": true}\n',
+        ]
+
+        with mock.patch("requests.post", return_value=FakeResponse(streamed)):
+            client = LLMClient(use_mock=False)
+            result = client.generate("hi")
+
+        self.assertEqual(result, "Hello world")
