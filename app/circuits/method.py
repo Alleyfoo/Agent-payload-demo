@@ -55,6 +55,42 @@ class MethodProducerCircuit:
                 "prevention": "Habits or configuration tips to avoid recurrence.",
             },
         },
+        "qa": {
+            "format": "qa_v1",
+            "description": "Structured question answering with concise evidence",
+            "sections": ["question", "answer", "supporting_points", "follow_up"],
+            "section_schemas": {
+                "question": "Restate the user's question in your own words.",
+                "answer": "Direct, complete answer in 3–6 sentences.",
+                "supporting_points": "Bulleted facts, citations, or short code that back up the answer.",
+                "follow_up": "Two suggested follow-up questions or next actions for the user.",
+            },
+            "guidance": "Answer first, then provide evidence. Keep tone helpful and focused on the user's intent.",
+            "examples": [
+                "# Question: How do I append to a Python list?\n",
+                "## Answer: Use list.append(item) to add a single element to the end.\n",
+                "## Supporting_points:\n- append mutates the existing list in-place.\n- For multiple items at once, prefer list.extend(iterable).\n",
+                "## Follow_up: What if I need to insert at a specific position?; How do I avoid duplicates?",
+            ],
+        },
+        "cheatsheet": {
+            "format": "cheatsheet_v1",
+            "description": "Rapid-look cheat sheet with snippets and pitfalls",
+            "sections": ["summary", "snippets", "pitfalls", "shortcuts"],
+            "section_schemas": {
+                "summary": "One-paragraph refresher of the topic and why it matters.",
+                "snippets": "Compact code or command snippets with one-line explanations.",
+                "pitfalls": "Common mistakes and how to avoid or detect them.",
+                "shortcuts": "Short tips, flags, or editor tricks that save time.",
+            },
+            "guidance": "Favor brevity and skimmability. Lead with defaults, then power tips.",
+            "examples": [
+                "# Summary: Git branching essentials for quick fixes.\n",
+                "## Snippets:\n- git checkout -b hotfix/issue-123\n- git cherry-pick <commit>  # bring in one change\n",
+                "## Pitfalls:\n- Avoid force-pushing shared branches; use --force-with-lease if needed.\n",
+                "## Shortcuts: git switch <branch>; git restore --staged <file> to unstage.",
+            ],
+        },
     }
 
     def __init__(self, llm: LLMClient) -> None:
@@ -63,7 +99,8 @@ class MethodProducerCircuit:
     def resolve_method_key(self, task_type: str) -> str:
         if task_type in self.METHOD_DEFINITIONS:
             return task_type
-        return "lesson_page"
+        fallback_map = {"qa": "qa", "cheatsheet": "cheatsheet"}
+        return fallback_map.get(task_type, "lesson_page")
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", "_", text.lower().strip())
@@ -106,6 +143,8 @@ class MethodProducerCircuit:
         section_help = "\n".join(
             [f"- {section}: {section_schemas.get(section, '')}" for section in sections]
         )
+        guidance = method_def.get("guidance", "")
+        example_blocks = method_def.get("examples", [])
         heading_help = (
             "Label each section with a Markdown heading using '# <section>' or '## <section>'. "
             "You may include punctuation or short clarifiers after the name (e.g., '# Title: ...' or "
@@ -118,6 +157,8 @@ class MethodProducerCircuit:
         else:
             constraints_line = ""
 
+        examples_help = "\n".join(str(block).strip("\n") for block in example_blocks)
+
         return (
             "You are MetodiAgentti followed by TuottajaAgentti. Use the provided method to build content.\n"
             f"Task type: {task_spec.task_type} ({method_def['description']}).\n"
@@ -126,8 +167,22 @@ class MethodProducerCircuit:
             f"Intent: topic={task_spec.topic}, language={task_spec.language}, target_level={task_spec.target_level}.\n"
             f"{constraints_line}"
             f"{heading_help}\n"
+            f"Guidance: {guidance}\n"
+            f"Examples (structure, not verbatim to copy):\n{examples_help}\n"
             "Return the content labeled per section in Markdown."
         )
+
+    def _compute_revision_delta(
+        self, sections_content: Dict[str, str], previous_sections: Dict[str, str] | None
+    ) -> Dict[str, List[str]]:
+        previous_sections = previous_sections or {}
+        added = [section for section in sections_content if section not in previous_sections]
+        changed = [
+            section
+            for section, body in sections_content.items()
+            if section in previous_sections and body.strip() != previous_sections.get(section, "").strip()
+        ]
+        return {"added_sections": added, "changed_sections": changed}
 
     def run(
         self,
@@ -136,6 +191,7 @@ class MethodProducerCircuit:
         prior_review: ReviewReport | None = None,
         revision_number: int = 0,
         method_key: str | None = None,
+        previous_sections: Dict[str, str] | None = None,
     ) -> Dict[str, MethodPlan | ContentPackage | Message | Dict[str, str]]:
         resolved_method_key = method_key or self.resolve_method_key(task_spec.task_type)
         method_def = self.METHOD_DEFINITIONS[resolved_method_key]
@@ -152,6 +208,7 @@ class MethodProducerCircuit:
 
         sections_content = self._extract_sections(generated, method_plan.sections)
         missing_sections = [s for s in method_plan.sections if s not in sections_content]
+        revision_delta = self._compute_revision_delta(sections_content, previous_sections)
 
         method_respected = len(missing_sections) == 0
         warnings: List[str] = []
@@ -165,6 +222,7 @@ class MethodProducerCircuit:
             content=content,
             method_respected=method_respected,
             warnings=warnings,
+            revision_number=revision_number,
         )
 
         message = Message(
@@ -177,6 +235,7 @@ class MethodProducerCircuit:
                 "sections": method_plan.sections,
                 "content": generated,
                 "revision": revision_number,
+                "revision_delta": revision_delta,
             },
         )
 
@@ -185,4 +244,5 @@ class MethodProducerCircuit:
             "content_package": package,
             "message": message,
             "sections_content": sections_content,
+            "revision_delta": revision_delta,
         }
