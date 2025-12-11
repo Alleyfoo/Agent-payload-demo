@@ -25,17 +25,44 @@ class LLMClient:
         if self.use_mock:
             return self._mock_response(prompt)
 
-        payload = {"model": self.model, "prompt": prompt}
+        payload = {"model": self.model, "prompt": prompt, "stream": True}
         if system:
             payload["system"] = system
 
-        response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=60)
+        response = requests.post(
+            f"{self.base_url}/api/generate", json=payload, timeout=60, stream=True
+        )
         response.raise_for_status()
-        data = response.json()
-        # Ollama returns streaming results; consolidate if needed
-        if "response" in data:
-            return data["response"].strip()
-        return json.dumps(data)
+
+        stream_chunks = []
+        raw_lines = []
+        for line in response.iter_lines():
+            if not line:
+                continue
+            raw_lines.append(line)
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError:
+                continue
+
+            chunk = event.get("response")
+            if chunk:
+                stream_chunks.append(chunk)
+
+        if stream_chunks:
+            return "".join(stream_chunks).strip()
+
+        combined = b"".join(raw_lines) if raw_lines else response.content
+        if combined:
+            try:
+                data = json.loads(combined.decode("utf-8"))
+                if "response" in data:
+                    return data["response"].strip()
+                return json.dumps(data)
+            except json.JSONDecodeError:
+                return combined.decode("utf-8", errors="replace")
+
+        return ""
 
     def _mock_response(self, prompt: str) -> str:
         """Lightweight mock that fabricates deterministic output for tests."""
