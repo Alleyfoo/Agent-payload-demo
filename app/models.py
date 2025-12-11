@@ -75,3 +75,4 @@ class UserResponse:
     summary: str
     content: Dict[str, Any]
     shadow_report_path: Optional[str]
+    revision_summary: Dict[str, Any] = field(default_factory=dict)

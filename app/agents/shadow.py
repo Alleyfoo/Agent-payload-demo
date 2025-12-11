@@ -38,6 +38,8 @@ class ShadowAgent:
         )
         revision_churn = self._revision_churn(revision_history)
         churn_penalty = min(0.25, revision_churn * 0.04)
+        drift_velocity = self._drift_velocity("drift_score")
+        coverage_trend = self._drift_velocity("section_completion_rate")
 
         drift_dimensions = {
             "format_adherence": round(review.section_coverage, 3),
@@ -49,6 +51,8 @@ class ShadowAgent:
             "revision_depth": revision_depth,
             "section_completion": section_completion_rate,
             "revision_churn": revision_churn,
+            "drift_velocity": drift_velocity,
+            "coverage_trend": coverage_trend,
         }
 
         drift_score = min(
@@ -59,10 +63,13 @@ class ShadowAgent:
                 + revision_penalty
                 + churn_penalty
                 + (1 - fact_accuracy_score) * 0.6
-                + (1 - grammar_clarity_score) * 0.35,
+                + (1 - grammar_clarity_score) * 0.35
+                + max(drift_velocity, 0) * 0.1,
                 3,
             ),
         )
+
+        accept_rate = self._acceptance_rate(decision)
 
         report = {
             "run_id": run_id,
@@ -80,6 +87,7 @@ class ShadowAgent:
             "section_completion_rate": section_completion_rate,
             "revision_depth": revision_depth,
             "revision_churn": revision_churn,
+            "acceptance_rate": accept_rate,
             "revision_history": revision_history,
             "revision_history_snapshot": revision_history[-3:],
             "review_decision": decision.decision if decision else "unknown",
@@ -89,6 +97,7 @@ class ShadowAgent:
 
         aggregates = self._update_aggregates(report)
         report["rolling_aggregates"] = aggregates
+        report["historical_trends"] = aggregates.get("historical_trends", {})
 
         self._persist(report)
         self._prune(run_id)
@@ -162,6 +171,17 @@ class ShadowAgent:
         completed = sum(1 for section in sections if str(content.get(section, "")).strip())
         return round(completed / len(sections), 3)
 
+    def _drift_velocity(self, key: str) -> float:
+        if len(self.history) < 2:
+            return 0.0
+        previous = self.history[-1].get(key)
+        before_previous = self.history[-2].get(key)
+        if not isinstance(previous, (int, float)) or not isinstance(
+            before_previous, (int, float)
+        ):
+            return 0.0
+        return round(previous - before_previous, 3)
+
     def _revision_churn(self, revision_history: List[Dict[str, object]]) -> int:
         churn = 0
         for entry in revision_history:
@@ -169,6 +189,36 @@ class ShadowAgent:
             changed = entry.get("changed_sections", [])
             churn += len(added) + len(changed)
         return churn
+
+    def _acceptance_rate(self, decision: Optional[JudgeDecision]) -> float:
+        total_runs = len(self.history) + 1
+        accepted = sum(
+            1 for report in self.history if report.get("review_decision") == "accept"
+        )
+        if decision and decision.decision == "accept":
+            accepted += 1
+        return round(accepted / total_runs, 3) if total_runs else 0.0
+
+    def _historical_trends(
+        self, reports: List[Dict[str, object]], keys: List[str], window: int = 5
+    ) -> Dict[str, Dict[str, object]]:
+        trends: Dict[str, Dict[str, object]] = {}
+        window_reports = reports[-window:]
+        for key in keys:
+            values = [
+                report.get(key)
+                for report in window_reports
+                if isinstance(report.get(key), (int, float))
+            ]
+            if len(values) < 2:
+                continue
+            trends[key] = {
+                "delta": round(values[-1] - values[0], 3),
+                "min": min(values),
+                "max": max(values),
+                "spark": values,
+            }
+        return trends
 
     def _update_aggregates(self, current_report: Dict[str, object]) -> Dict[str, object]:
         combined_history = self.history + [current_report]
@@ -195,32 +245,27 @@ class ShadowAgent:
             "section_coverage": moving_average("section_coverage", window),
             "section_completion_rate": moving_average("section_completion_rate", window),
             "revision_depth": moving_average("revision_depth", window),
+            "acceptance_rate": moving_average("acceptance_rate", window),
         }
-
-        if len(window) > 1:
-            previous = window[-2]
-            rolling_trends = {
-                key: round(current_report.get(key, 0) - previous.get(key, 0), 3)
-                for key in [
-                    "drift_score",
-                    "fact_accuracy_score",
-                    "grammar_clarity_score",
-                    "format_violations",
-                    "section_coverage",
-                    "section_completion_rate",
-                    "revision_depth",
-                ]
-                if isinstance(current_report.get(key), (int, float))
-                and isinstance(previous.get(key), (int, float))
-            }
-        else:
-            rolling_trends = {}
+        historical_trends = self._historical_trends(
+            combined_history,
+            [
+                "drift_score",
+                "fact_accuracy_score",
+                "grammar_clarity_score",
+                "format_violations",
+                "section_coverage",
+                "section_completion_rate",
+                "revision_depth",
+                "acceptance_rate",
+            ],
+        )
 
         aggregates = {
             "total_runs": len(combined_history),
             "decision_counts": decision_counts,
             "rolling_averages": rolling_averages,
-            "rolling_trends": rolling_trends,
+            "historical_trends": historical_trends,
         }
 
         self.history = combined_history
