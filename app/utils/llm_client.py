@@ -29,39 +29,56 @@ class LLMClient:
         if system:
             payload["system"] = system
 
+        stream = bool(payload.get("stream", False))
         response = requests.post(
-            f"{self.base_url}/api/generate", json=payload, timeout=60, stream=True
+            f"{self.base_url}/api/generate", json=payload, timeout=60, stream=stream
         )
         response.raise_for_status()
 
-        stream_chunks = []
-        raw_lines = []
-        for line in response.iter_lines():
-            if not line:
-                continue
-            raw_lines.append(line)
+        stream_chunks: list[str] = []
+        raw_fragments: list[bytes] = []
 
-            decoded = line.decode("utf-8", errors="ignore").strip()
-            if not decoded:
-                continue
+        if stream:
+            buffer = b""
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                raw_fragments.append(line)
+                buffer += line
 
-            try:
-                event = json.loads(decoded)
-            except json.JSONDecodeError:
-                continue
+                decode_error = False
+                try:
+                    decoded = buffer.decode("utf-8")
+                except UnicodeDecodeError:
+                    decode_error = True
+                    decoded = buffer.decode("utf-8", errors="ignore")
 
-            chunk = event.get("response")
-            if chunk:
-                stream_chunks.append(chunk)
+                try:
+                    event = json.loads(decoded)
+                except json.JSONDecodeError:
+                    if decode_error:
+                        # We likely trimmed invalid bytes; wait for more data
+                        continue
+                    continue
 
-        if stream_chunks:
-            return "".join(stream_chunks).strip()
+                buffer = b""
+                chunk = event.get("response")
+                if chunk:
+                    stream_chunks.append(chunk)
+                if event.get("done"):
+                    break
 
-        combined = b"".join(raw_lines) if raw_lines else response.content
+            if buffer:
+                raw_fragments.append(buffer)
+
+            if stream_chunks:
+                return "".join(stream_chunks).strip()
+
+        combined = b"".join(raw_fragments) if raw_fragments else response.content
         if combined:
             try:
                 data = json.loads(combined.decode("utf-8", errors="ignore"))
-                if "response" in data:
+                if isinstance(data, dict) and "response" in data:
                     return data["response"].strip()
                 return json.dumps(data)
             except json.JSONDecodeError:
