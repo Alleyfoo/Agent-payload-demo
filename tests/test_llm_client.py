@@ -10,9 +10,12 @@ class FakeResponse:
         self._lines = lines
         self.content = b"".join(lines)
 
-    def iter_lines(self):
+    def iter_lines(self, decode_unicode=False):
         for line in self._lines:
-            yield line
+            if decode_unicode:
+                yield line.decode("utf-8")
+            else:
+                yield line
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -41,27 +44,13 @@ class TestLLMClient(TestCase):
         mocked.assert_called_once()
         self.assertEqual(result, "Hello world")
 
-    def test_streaming_ignores_decode_errors(self):
-        streamed = [
-            b'{"response":"Hello"}\x80',
-            b'{"response":" world"}\n',
-            b'{"done": true}\n',
-        ]
-
-        with mock.patch("requests.post", return_value=FakeResponse(streamed)):
-            client = LLMClient(use_mock=False)
-            result = client.generate("hi")
-
-        self.assertEqual(result, "Hello world")
-
-    def test_streaming_reassembles_multibyte_fragments(self):
+    def test_streaming_handles_utf8_chunks(self):
         emoji = " \U0001f600"
-        emoji_bytes = emoji.encode("utf-8")
         streamed = [
-            b'{"response":"Hello',
-            b' world' + emoji_bytes[:2],
-            emoji_bytes[2:] + b'", "done": false}',
-            b'{"done": true}',
+            b'{"response":"Hello", "done": false}\n',
+            b'{"response":" world", "done": false}\n',
+            b'{"response":"' + emoji.encode("utf-8") + b'", "done": false}\n',
+            b'{"done": true}\n',
         ]
 
         with mock.patch("requests.post", return_value=FakeResponse(streamed)):

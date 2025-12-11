@@ -35,56 +35,33 @@ class LLMClient:
         )
         response.raise_for_status()
 
-        stream_chunks: list[str] = []
-        raw_fragments: list[bytes] = []
-
         if stream:
-            buffer = b""
-            for line in response.iter_lines():
+            chunks: list[str] = []
+            for line in response.iter_lines(decode_unicode=False):
                 if not line:
                     continue
-                raw_fragments.append(line)
-                buffer += line
-
-                decode_error = False
-                try:
-                    decoded = buffer.decode("utf-8")
-                except UnicodeDecodeError:
-                    decode_error = True
-                    decoded = buffer.decode("utf-8", errors="ignore")
-
+                decoded = line.decode("utf-8", errors="replace")
                 try:
                     event = json.loads(decoded)
                 except json.JSONDecodeError:
-                    if decode_error:
-                        # We likely trimmed invalid bytes; wait for more data
-                        continue
                     continue
 
-                buffer = b""
-                chunk = event.get("response")
-                if chunk:
-                    stream_chunks.append(chunk)
+                fragment = event.get("response")
+                if fragment:
+                    chunks.append(fragment)
                 if event.get("done"):
                     break
 
-            if buffer:
-                raw_fragments.append(buffer)
+            if chunks:
+                return "".join(chunks).strip()
 
-            if stream_chunks:
-                return "".join(stream_chunks).strip()
-
-        combined = b"".join(raw_fragments) if raw_fragments else response.content
-        if combined:
-            try:
-                data = json.loads(combined.decode("utf-8", errors="ignore"))
-                if isinstance(data, dict) and "response" in data:
-                    return data["response"].strip()
-                return json.dumps(data)
-            except json.JSONDecodeError:
-                return combined.decode("utf-8", errors="replace")
-
-        return ""
+        try:
+            data = response.json()
+            if isinstance(data, dict) and "response" in data:
+                return data["response"].strip()
+            return json.dumps(data)
+        except (json.JSONDecodeError, ValueError):
+            return response.content.decode("utf-8", errors="replace")
 
     def _mock_response(self, prompt: str) -> str:
         """Lightweight mock that fabricates deterministic output for tests."""
