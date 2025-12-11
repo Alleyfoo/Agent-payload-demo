@@ -15,7 +15,9 @@ class ShadowAgent:
     def observe(self, message: Message) -> None:
         self.messages.append(message)
 
-    def summarize(self, run_id: str, review: ReviewReport) -> Dict[str, object]:
+    def summarize(
+        self, run_id: str, review: ReviewReport, revision_history: List[Dict[str, object]]
+    ) -> Dict[str, object]:
         format_violations = 0 if review.format_ok else 1
         drift_score = format_violations * 0.12
         report = {
@@ -26,6 +28,7 @@ class ShadowAgent:
             "hallucination_risk": "low" if review.format_ok else "medium",
             "uncertainty_expressed": not review.format_ok,
             "notes": [m.payload for m in self.messages if m.run_id == run_id],
+            "revision_history": revision_history,
         }
         self._persist(report)
         return report
