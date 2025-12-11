@@ -38,6 +38,7 @@ class ContentPackage:
     content: Dict[str, Any]
     method_respected: bool
     warnings: List[str]
+    revision_number: int = 0
     revision_history: List[Dict[str, Any]] = field(default_factory=list)
 
 
