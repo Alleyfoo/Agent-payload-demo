@@ -29,6 +29,22 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
      -d '{"message": "Tarvitsen oppitunnin Python-lista comprehensioneista suomeksi"}'
    ```
 
+   Esimerkkivastaus sisältää nyt revisiohistorian (lisätyt/muokatut osiot):
+
+   ```json
+   {
+     "run_id": "...",
+     "decision": "accept",
+     "summary": "ACCEPT — revisions: 1; added: ['title', 'concept', 'code_example', 'exercise']; changed: []; drift_score: 0.0",
+     "content": {
+       "format": "lesson_v1",
+       "title": null,
+       "raw": "# Title: Example lesson..."
+     },
+     "shadow_report_path": "data/shadow_reports.jsonl"
+   }
+   ```
+
 ### Docker
 
 ```bash
@@ -61,3 +77,91 @@ Säilöö `data/`-hakemiston kontista isäntään.
 - Laajenna metodikirjastoa tehtävätyyppikohtaisilla ohjeilla ja esimerkeillä
 - Raskautetut drift-metriikat (esim. sisältötarkkuus, kielivirheet) ja pidemmän aikavälin trendit
 - Revisiosilmukan kontekstin tallennus (esim. muuttuneet osiot) ja näkyvyys käyttäjän palautteessa
+- `app/agents/shadow.py`: VarjoAgentin lokitus, drift-metriikat ja juoksukohtaiset aggregaatit
+- `app/utils/llm_client.py`: Ollama-kutsu tai mock
+- `data/`: VarjoAgentin raportit (JSONL)
+
+## Tehtävätyypit ja metodit
+
+PuhemiesAgentti ohjaa MetodiPiiriin tehtävätyypin (`task_type`) perusteella, jolloin sisällöntuotannon metodi ja osiot vaihtuvat. Tuetut tyypit:
+
+- `lesson_page`: lyhyt teoria + harjoitus (osiot: title, concept, code_example, exercise)
+- `tutorial`: askel-askeleelta -ohje käytännön tavoitteeseen (title, overview, steps, validation, next_steps)
+- `reference`: tiivis muistilappu syntaksista ja optioista (summary, api_surface, usage_examples, caveats)
+- `troubleshooting`: vianmääritys ja korjauspolku (issue_summary, root_causes, diagnostic_steps, fixes, prevention)
+
+### Esimerkkipayloadit
+
+LLM:lle rakentuva `TaskSpec`-rakenne näyttää tältä (kentät täytetään IntentioPiirissä):
+
+```json
+{
+  "task_type": "tutorial",
+  "topic": "Docker-kontin rakentaminen Python-sovellukselle",
+  "language": "fi",
+  "target_level": "intermediate",
+  "constraints": ["markdown output", "sisällytä komennot"]
+}
+```
+
+Vastaavasti vianmääritykseen voidaan käyttää `troubleshooting`-tyyppiä:
+
+```json
+{
+  "task_type": "troubleshooting",
+  "topic": "FastAPI sovellus palauttaa 500-virheen kun tietokanta ei vastaa",
+  "language": "fi",
+  "target_level": "advanced",
+  "constraints": ["listaa tarkistuskomennot", "lyhyet korjausvaiheet"]
+}
+```
+
+## VarjoAgentin raportointi ja metriikat
+
+VarjoAgentti kerää jokaisesta ajosta sekä juoksukohtaiset mitat että kumulatiiviset aggregaatit ja kirjoittaa ne JSONL-riviin tiedostoon `data/shadow_reports.jsonl`.
+
+### Uudet mittarit
+
+- **`fact_accuracy_score`**: heuristinen arvio faktatarkkuudesta (`1.0` kun `potential_hallucinations` on tyhjä, −0.15 per havaittu riski, minimi `0.4`).
+- **`grammar_clarity_score`**: kieliopin ja luettavuuden pistemäärä (perustuu tekstin keskimääräiseen lausepituuteen sekä välimerkkibonukseen; tyhjästä sisällöstä seuraa oletusarvo `0.6`).
+- **`drift_dimensions`**: dimensioittainen drift-profiili (`format_adherence`, `fact_accuracy`, `grammar_clarity`). Kokonaisdrift lasketaan näiden pohjalta.
+
+### Rullaavat aggregaatit
+
+Jokaisessa raportissa on avain `rolling_aggregates`, joka sisältää:
+
+- **`total_runs`**: raportoitujen ajokertojen määrä (mukaan lukien nykyinen rivi).
+- **`decision_counts`**: hyväksyttyjen/hylättyjen päätösten kumulatiiviset määrät.
+- **`moving_averages`**: liukuvat keskiarvot kentille `drift_score`, `fact_accuracy_score`, `grammar_clarity_score` ja `format_violations` koko historian yli.
+
+### JSONL-rivin esimerkkirakenne
+
+```json
+{
+  "run_id": "...",
+  "pipeline": ["IntentioPiiri", "MetodiPiiri", "TarkastusPiiri"],
+  "drift_score": 0.08,
+  "format_violations": 0,
+  "fact_accuracy_score": 0.94,
+  "grammar_clarity_score": 0.9,
+  "drift_dimensions": {
+    "format_adherence": 1,
+    "fact_accuracy": 0.94,
+    "grammar_clarity": 0.9
+  },
+  "decision": "accept",
+  "hallucination_risk": "low",
+  "uncertainty_expressed": false,
+  "notes": [/* piirin viestien raakadatat */],
+  "rolling_aggregates": {
+    "total_runs": 5,
+    "decision_counts": {"accept": 4, "revise": 1},
+    "moving_averages": {
+      "drift_score": 0.12,
+      "fact_accuracy_score": 0.9,
+      "grammar_clarity_score": 0.88,
+      "format_violations": 0.1
+    }
+  }
+}
+```

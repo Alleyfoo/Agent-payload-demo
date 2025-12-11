@@ -52,6 +52,8 @@ class SpeakerAgent:
 
         revision_count = 0
         method_result = self.method_circuit.run(run_id, task_spec)
+        method_key = self.method_circuit.resolve_method_key(task_spec.task_type)
+        method_result = self.method_circuit.run(run_id, task_spec, method_key)
         method_message = method_result["message"]
         method_plan = method_result["method_plan"]
         content_package = method_result["content_package"]
@@ -83,10 +85,16 @@ class SpeakerAgent:
                 task_spec,
                 prior_review=review,
                 revision_number=revision_count,
+        for revision in range(max_revisions):
+            method_result = self.method_circuit.run(
+                run_id, task_spec, revision_index=revision, previous_sections=previous_sections
             )
             method_message = method_result["message"]
             method_plan = method_result["method_plan"]
             content_package = method_result["content_package"]
+            revision_delta = method_result["revision_delta"]
+            revision_history.append(revision_delta)
+            content_package.revision_history = list(revision_history)
             self._record(method_message)
 
             review_result = self.review_circuit.run(run_id, method_plan, content_package)
@@ -106,6 +114,12 @@ class SpeakerAgent:
         )
 
         shadow_report = self.shadow.summarize(run_id, review, method_plan, content_package)
+            previous_sections = method_result["sections_content"]
+
+            if decision.decision == "accept":
+                break
+
+        shadow_report = self.shadow.summarize(run_id, review, revision_history)
 
         return CircuitResult(
             task_spec=task_spec,
@@ -120,6 +134,13 @@ class SpeakerAgent:
         summary = (
             f"{result.decision.decision.upper()} — drift_score: {result.shadow_report.get('drift_score')}"
             f" — revisions: {result.content.revision_number}"
+        revision_history = result.content.revision_history
+        latest_delta = revision_history[-1] if revision_history else {}
+        summary = (
+            f"{result.decision.decision.upper()} — revisions: {len(revision_history)}; "
+            f"added: {latest_delta.get('added_sections', [])}; "
+            f"changed: {latest_delta.get('changed_sections', [])}; "
+            f"drift_score: {result.shadow_report.get('drift_score')}"
         )
         return UserResponse(
             run_id=result.task_spec.run_id,

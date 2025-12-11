@@ -21,6 +21,11 @@ class ReviewJudgeCircuit:
         internal_consistency = "high" if format_ok else "medium"
         potential_hallucinations = [] if format_ok else [f"Missing sections: {', '.join(missing_sections)}"]
         notes = content_package.warnings
+        content_body = content_package.content.get("raw", "")
+        format_ok = all(section.lower() in content_body.lower() for section in method_plan.sections)
+        internal_consistency = "high" if format_ok else "medium"
+        potential_hallucinations = [] if format_ok else ["Missing sections"]
+        notes = []
 
         review = ReviewReport(
             format_ok=format_ok,
@@ -34,6 +39,10 @@ class ReviewJudgeCircuit:
         decision_value = "accept" if review.format_ok else "revise"
         reason = "Content consistent" if format_ok else "Format or method deviations"
         decision = JudgeDecision(decision=decision_value, reason=reason)
+        )
+
+        decision_value = "accept" if review.format_ok else "revise"
+        decision = JudgeDecision(decision=decision_value, reason="Format check" if not format_ok else "Content consistent")
 
         message = Message(
             run_id=run_id,
