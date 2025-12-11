@@ -58,3 +58,17 @@ class TestLLMClient(TestCase):
             result = client.generate("hi")
 
         self.assertEqual(result, f"Hello world{emoji}")
+
+    def test_streaming_reconstructs_canned_payload(self):
+        streamed = [
+            b'{"model":"llama3.1","response":"Hello ","done": false}\n',
+            b'{"model":"llama3.1","response":"world","done": false}\n',
+            b'{"model":"llama3.1","response":"!","done": false}\n',
+            b'{"model":"llama3.1","done": true}\n',
+        ]
+
+        with mock.patch("requests.post", return_value=FakeResponse(streamed)):
+            client = LLMClient(use_mock=False)
+            result = client.generate("hi")
+
+        self.assertEqual(result, "Hello world!")
