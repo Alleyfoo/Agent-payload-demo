@@ -6,9 +6,9 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
 
 - **PuhemiesAgentti (`SpeakerAgent`)**: ainoa rajapinta käyttäjään. Luodaan `run_id`, reititetään viesti piireihin ja yhdistetään tulokset.
 - **Piiri A (Intentio + Konteksti)**: koostaa `TaskSpec`-rakenteen käyttäjän viestistä.
-- **Piiri B (Metodi + Tuottaja)**: määrittää oletusmetodin (`lesson_v1`) ja tuottaa sisällön LLM:n avulla.
+- **Piiri B (Metodi + Tuottaja)**: valitsee metodin tehtävätyypin perusteella (esim. `lesson_v1` tai `qa_v1`) ja tuottaa sisällön LLM:n avulla. Jos tarkastuspyyntö vaatii korjausta, piiri tuottaa yhden iteratiivisen revisiokierroksen.
 - **Piiri C (Tarkastaja + Tuomari)**: tarkastaa, että sisältö noudattaa metodia ja antaa päätöksen (accept/revise).
-- **VarjoAgentti**: kuuntelee kaikki viestit, laskee drift-scoren sekä lisämittoja (faktatarkkuus, kielioppi/sujuvuus) ja tallentaa JSONL-raportin `data/shadow_reports.jsonl`.
+- **VarjoAgentti**: kuuntelee kaikki viestit, laskee drift-scoren (osiopeitto + varoitukset), kasvattaa historiatason metriikoita ja tallentaa JSONL-raportin `data/shadow_reports.jsonl`.
 
 ## Käyttö
 
@@ -62,6 +62,21 @@ Säilöö `data/`-hakemiston kontista isäntään.
 - `app/main.py`: FastAPI-rajapinta (/chat)
 - `app/speaker.py`: PuhemiesAgentin orkestrointi
 - `app/circuits/*`: piirit (Intentio/Konteksti, Metodi/Tuottaja, Tarkastus/Tuomari)
+- `app/agents/shadow.py`: VarjoAgentin lokitus ja analyysi
+- `app/utils/llm_client.py`: Ollama-kutsu tai mock
+- `data/`: VarjoAgentin raportit (JSONL)
+
+### Metodivalinta ja revisiot
+
+- Piiri B valitsee metodin `task_spec.task_type`-kentän perusteella. Oletus on `lesson_page` -> `lesson_v1`; arvo `qa` valitsee mallin `qa_v1` (osiot: question, answer, follow_up) ja `cheatsheet` valitsee `cheatsheet_v1` (summary, snippets, pitfalls, shortcuts).
+- Jos TarkastusPiiri palauttaa `revise`, Puhemies ohjaa lisäkierroksen Piiri B:hen hyödyntäen tarkastusraportin puuttuvia osioita. Revisioiden enimmäismäärä voidaan asettaa muuttujalla `MAX_REVISIONS` (oletus 2).
+- VarjoAgentti kerää jokaisesta ajosta drift-scoren (osiopeitto + varoituskerroin + revisiokertoimien pieni lisä) sekä yksinkertaisen historiatiivisteen (keskimääräinen drift, viimeisimmät formaattivirheet).
+
+## Jatkokehitysideoita
+
+- Laajenna metodikirjastoa tehtävätyyppikohtaisilla ohjeilla ja esimerkeillä
+- Raskautetut drift-metriikat (esim. sisältötarkkuus, kielivirheet) ja pidemmän aikavälin trendit
+- Revisiosilmukan kontekstin tallennus (esim. muuttuneet osiot) ja näkyvyys käyttäjän palautteessa
 - `app/agents/shadow.py`: VarjoAgentin lokitus, drift-metriikat ja juoksukohtaiset aggregaatit
 - `app/utils/llm_client.py`: Ollama-kutsu tai mock
 - `data/`: VarjoAgentin raportit (JSONL)
@@ -101,7 +116,6 @@ Vastaavasti vianmääritykseen voidaan käyttää `troubleshooting`-tyyppiä:
 }
 ```
 
-## Jatkokehitysideoita
 ## VarjoAgentin raportointi ja metriikat
 
 VarjoAgentti kerää jokaisesta ajosta sekä juoksukohtaiset mitat että kumulatiiviset aggregaatit ja kirjoittaa ne JSONL-riviin tiedostoon `data/shadow_reports.jsonl`.

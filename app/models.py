@@ -47,6 +47,8 @@ class ReviewReport:
     internal_consistency: str
     potential_hallucinations: List[str]
     notes: List[str]
+    missing_sections: List[str]
+    section_coverage: float
 
 
 @dataclass
