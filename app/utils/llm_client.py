@@ -40,8 +40,13 @@ class LLMClient:
             if not line:
                 continue
             raw_lines.append(line)
+
+            decoded = line.decode("utf-8", errors="ignore").strip()
+            if not decoded:
+                continue
+
             try:
-                event = json.loads(line.decode("utf-8"))
+                event = json.loads(decoded)
             except json.JSONDecodeError:
                 continue
 
@@ -55,7 +60,7 @@ class LLMClient:
         combined = b"".join(raw_lines) if raw_lines else response.content
         if combined:
             try:
-                data = json.loads(combined.decode("utf-8"))
+                data = json.loads(combined.decode("utf-8", errors="ignore"))
                 if "response" in data:
                     return data["response"].strip()
                 return json.dumps(data)
