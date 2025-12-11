@@ -72,6 +72,18 @@ class ExtractSectionsTest(unittest.TestCase):
         self.assertNotIn("code_example", extracted)
         self.assertNotIn("exercise", extracted)
 
+    def test_extract_sections_uses_llm_mock_output(self) -> None:
+        llm = LLMClient(use_mock=True)
+        circuit = MethodProducerCircuit(llm)
+        response = llm.generate("lesson_v1")
+
+        sections = ["title", "concept", "code_example", "exercise"]
+        extracted = circuit._extract_sections(response, sections)
+
+        self.assertEqual(set(sections), set(extracted.keys()))
+        self.assertIn("Example lesson", extracted["title"])
+        self.assertIn("List comprehension", extracted["concept"])
+
     def test_run_with_mock_llm_covers_all_sections(self) -> None:
         circuit = MethodProducerCircuit(LLMClient(use_mock=True))
         task_spec = TaskSpec(
