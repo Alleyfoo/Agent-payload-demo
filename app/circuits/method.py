@@ -9,6 +9,32 @@ from app.utils.llm_client import LLMClient
 
 class MethodProducerCircuit:
     METHOD_DEFINITIONS: Dict[str, Dict[str, object]] = {
+        "project_plan": {
+            "format": "project_plan_v1",
+            "description": "Milestone-focused delivery plan with risks and owners",
+            "sections": ["objective", "deliverables", "milestones", "risks", "owners"],
+            "section_schemas": {
+                "objective": "One-sentence goal with measurable success criteria.",
+                "deliverables": "Bullet list of tangible outputs with due dates.",
+                "milestones": "Ordered checkpoints with dates and success signals.",
+                "risks": "Top risks with likelihood, impact, and mitigation steps.",
+                "owners": "Who is accountable for each milestone/deliverable.",
+            },
+            "guidance": "Be concrete about dates and mitigation. Keep wording action-oriented.",
+        },
+        "study_guide": {
+            "format": "study_guide_v1",
+            "description": "Condensed study guide with checkpoints and self-test",
+            "sections": ["title", "prerequisites", "key_concepts", "checkpoints", "self_test"],
+            "section_schemas": {
+                "title": "Name of the unit or topic.",
+                "prerequisites": "What the learner must know first (links or bullet points).",
+                "key_concepts": "3-5 core ideas with one-line summaries.",
+                "checkpoints": "Milestones the learner should achieve in order.",
+                "self_test": "3-4 short questions or prompts to verify understanding.",
+            },
+            "guidance": "Prioritize brevity and clarity. Keep checkpoints outcome-oriented.",
+        },
         "lesson_page": {
             "format": "lesson_v1",
             "description": "Short lesson page with theory and practice",
@@ -99,7 +125,19 @@ class MethodProducerCircuit:
     def resolve_method_key(self, task_type: str) -> str:
         if task_type in self.METHOD_DEFINITIONS:
             return task_type
-        fallback_map = {"qa": "qa", "cheatsheet": "cheatsheet"}
+        fallback_map = {
+            "qa": "qa",
+            "faq": "qa",
+            "cheatsheet": "cheatsheet",
+            "cheat_sheet": "cheatsheet",
+            "howto": "tutorial",
+            "how_to": "tutorial",
+            "troubleshoot": "troubleshooting",
+            "reference_sheet": "reference",
+            "plan": "project_plan",
+            "project": "project_plan",
+            "study": "study_guide",
+        }
         return fallback_map.get(task_type, "lesson_page")
 
     def _normalize(self, text: str) -> str:
@@ -218,6 +256,8 @@ class MethodProducerCircuit:
             warnings.append(f"Missing sections: {', '.join(missing_sections)}")
 
         content = {"format": method_plan.format, **sections_content, "raw": generated}
+        if revision_number > 0:
+            content["revision_note"] = f"Revision #{revision_number} applied"
 
         package = ContentPackage(
             run_id=run_id,

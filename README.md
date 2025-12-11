@@ -6,9 +6,9 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
 
 - **PuhemiesAgentti (`SpeakerAgent`)**: ainoa rajapinta käyttäjään. Luodaan `run_id`, reititetään viesti piireihin ja yhdistetään tulokset.
 - **Piiri A (Intentio + Konteksti)**: koostaa `TaskSpec`-rakenteen käyttäjän viestistä.
-- **Piiri B (Metodi + Tuottaja)**: valitsee metodin tehtävätyypin perusteella (esim. `lesson_v1`, `qa_v1` tai `cheatsheet_v1`) ja tuottaa sisällön LLM:n avulla. Tarkastuskierros voi ohjata useita revisioita (oletus max 2) ja jokaisesta revisiosta lasketaan osioiden lisäys/muutos -delta.
+- **Piiri B (Metodi + Tuottaja)**: valitsee metodin tehtävätyypin perusteella (esim. `lesson_v1`, `qa_v1`, `project_plan_v1` tai `study_guide_v1`) ja tuottaa sisällön LLM:n avulla. Tarkastuskierros voi ohjata useita revisioita (oletus max 2) ja jokaisesta revisiosta lasketaan osioiden lisäys/muutos -delta.
 - **Piiri C (Tarkastaja + Tuomari)**: tarkastaa, että sisältö noudattaa metodia ja antaa päätöksen (accept/revise).
-- **VarjoAgentti**: kuuntelee kaikki viestit, laskee monidimensionaalisen drift-scoren (osiopeitto, varoitus- ja revisiopenalty, faktatarkkuus, kielioppi), kasvattaa rullaavia trendejä ja tallentaa JSONL-raportin `data/shadow_reports.jsonl`.
+- **VarjoAgentti**: kuuntelee kaikki viestit, laskee monidimensionaalisen drift-scoren (osiopeitto, varoitus- ja revisiopenalty, faktatarkkuus, kielioppi, revisiosyvyys ja churn), kasvattaa rullaavia trendejä ja tallentaa JSONL-raportin `data/shadow_reports.jsonl`.
 
 ## Käyttö
 
@@ -29,13 +29,13 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
      -d '{"message": "Tarvitsen oppitunnin Python-lista comprehensioneista suomeksi"}'
    ```
 
-   Esimerkkivastaus sisältää nyt revisiohistorian (lisätyt/muokatut osiot) ja drift-luvut:
+   Esimerkkivastaus sisältää nyt revisiohistorian (lisätyt/muokatut osiot numeroiduilla revisioilla) ja drift-luvut:
 
    ```json
    {
      "run_id": "...",
      "decision": "accept",
-    "summary": "ACCEPT — revisions: 1; added: ['title', 'concept', 'code_example', 'exercise']; changed: []; drift_score: 0.0",
+    "summary": "ACCEPT — total revisions: 1; latest added: ['title', 'concept', 'code_example', 'exercise']; latest changed: []; drift_score: 0.0; section_completion: 1.0",
      "content": {
        "format": "lesson_v1",
        "title": null,
@@ -68,17 +68,13 @@ Säilöö `data/`-hakemiston kontista isäntään.
 
 ### Metodivalinta ja revisiot
 
-- Piiri B valitsee metodin `task_spec.task_type`-kentän perusteella. Oletus on `lesson_page` -> `lesson_v1`; arvo `qa` valitsee mallin `qa_v1` ja `cheatsheet` valitsee `cheatsheet_v1`.
+- Piiri B valitsee metodin `task_spec.task_type`-kentän perusteella. Oletus on `lesson_page` -> `lesson_v1`; arvot `qa`/`faq` valitsevat mallin `qa_v1` ja `cheatsheet`/`cheat_sheet` valitsevat `cheatsheet_v1`. `howto`/`how_to` ohjautuu `tutorial`-metodiin, `plan`/`project` ohjautuu `project_plan`-metodiin ja `study` ohjautuu `study_guide`-metodiin.
 - `qa_v1`: strukturoitu kysymys-vastaus neljällä osiolla (question, answer, supporting_points, follow_up) ja sisäänrakennettu ohje "Answer first, then provide evidence" + esimerkkiblokki Markdown-rakenteelle.
 - `cheatsheet_v1`: tiivis muistilappu (summary, snippets, pitfalls, shortcuts) ohjeella korostaa nopeasti silmäiltävää muotoa sekä esimerkkiblokilla Git-teemasta.
+- `project_plan_v1`: toimitussuunnitelma tavoitteille, virstanpylväille, riskeille ja omistajuuksille.
+- `study_guide_v1`: tiivis opas ennakkovaatimuksilla, keskeisillä käsitteillä, checkpoint-listalla ja itsearviointikysymyksillä.
 - `troubleshooting`, `tutorial` ja `reference` sisältävät edelleen osiokohtaiset skemat. LLM:n promptiin syötetään nyt myös metodikohtaiset esimerkkirakenteet käyttäjän ohjaamiseksi.
 - Jos TarkastusPiiri palauttaa `revise`, Puhemies ohjaa lisäkierroksen Piiri B:hen hyödyntäen tarkastusraportin kontekstia. Revisioiden enimmäismäärä voidaan asettaa muuttujalla `MAX_REVISIONS` (oletus 2), ja jokaisesta kierroksesta tallennetaan lisätyt ja muuttuneet osiot `revision_history`-listaan sekä käyttäjäsummaryyn.
-
-## Jatkokehitysideoita
-
-- Pitkän aikavälin drift-trendien visualisointi (esim. viikkotason graafit)
-- Päätösten (accept/revise) parempi perustelu käyttäjäviestissä
-- API-rajapinnan rikastaminen palauttamalla myös VarjoAgentin rullaavat trendit
 
 ## Tehtävätyypit ja metodit
 
@@ -121,10 +117,11 @@ VarjoAgentti kerää jokaisesta ajosta sekä juoksukohtaiset mitat että kumulat
 
 ### Päivitetyt mittarit
 
-- **`drift_score`**: koostuu osiopeiton aukosta, varoituspenaltysta, revisiopenaltysta sekä faktatarkkuuden ja kieliopin puutteista.
-- **`drift_dimensions`**: dimensioittainen profiili (format_adherence, coverage_gap, warning_pressure, revision_pressure, fact_accuracy, grammar_clarity).
+- **`drift_score`**: koostuu osiopeiton aukosta, varoituspenaltysta, revisio- ja churn-penaltysta sekä faktatarkkuuden ja kieliopin puutteista.
+- **`drift_dimensions`**: dimensioittainen profiili (format_adherence, coverage_gap, warning_pressure, revision_pressure, fact_accuracy, grammar_clarity, revision_depth, section_completion, revision_churn).
 - **`fact_accuracy_score`** ja **`grammar_clarity_score`** säilyvät mutta vaikuttavat nyt kokonaisdriftiin.
-- **`revision_history`** tallennetaan jokaiselle riville (lisätyt/muokatut osiot per kierros), jolloin käyttäjäpalautteen delta vastaa varjoraporttia.
+- **`section_completion_rate`** ja revisiosyvyys (`revision_depth`) lisätään metriikoihin, jolloin raportti heijastaa myös osiotason valmiutta.
+- **`revision_history`** tallennetaan jokaiselle riville (lisätyt/muokatut osiot per kierros) ja snapshot viimeisistä revisioista, jolloin käyttäjäpalautteen delta vastaa varjoraporttia.
 
 ### Rullaavat aggregaatit ja trendit
 
@@ -132,7 +129,7 @@ Jokaisessa raportissa on avain `rolling_aggregates`, joka sisältää:
 
 - **`total_runs`**: raportoitujen ajokertojen määrä (mukaan lukien nykyinen rivi).
 - **`decision_counts`**: hyväksyttyjen/hylättyjen päätösten kumulatiiviset määrät.
-- **`rolling_averages`**: 5 edellisen ajon liukuvat keskiarvot kentille `drift_score`, `fact_accuracy_score`, `grammar_clarity_score`, `format_violations` ja `section_coverage`.
+- **`rolling_averages`**: 5 edellisen ajon liukuvat keskiarvot kentille `drift_score`, `fact_accuracy_score`, `grammar_clarity_score`, `format_violations`, `section_coverage`, `section_completion_rate` ja `revision_depth`.
 - **`rolling_trends`**: viimeisimmän ja sitä edeltävän ajon eroavaisuudet keskeisissä mittareissa.
 
 ### JSONL-rivin esimerkkirakenne
@@ -145,23 +142,36 @@ Jokaisessa raportissa on avain `rolling_aggregates`, joka sisältää:
   "format_violations": 0,
   "fact_accuracy_score": 0.94,
   "grammar_clarity_score": 0.9,
+  "section_completion_rate": 1.0,
+  "revision_depth": 1,
+  "revision_churn": 3,
   "drift_dimensions": {
     "format_adherence": 1,
     "fact_accuracy": 0.94,
-    "grammar_clarity": 0.9
+    "grammar_clarity": 0.9,
+    "revision_depth": 1,
+    "section_completion": 1.0,
+    "revision_churn": 3
   },
   "decision": "accept",
   "hallucination_risk": "low",
   "uncertainty_expressed": false,
+  "revision_history": [
+    {"revision": 0, "added_sections": ["title", "concept"], "changed_sections": []},
+    {"revision": 1, "added_sections": ["code_example", "exercise"], "changed_sections": ["concept"]}
+  ],
+  "revision_history_snapshot": [{"revision": 1, "added_sections": ["code_example", "exercise"], "changed_sections": ["concept"]}],
   "notes": [/* piirin viestien raakadatat */],
   "rolling_aggregates": {
     "total_runs": 5,
     "decision_counts": {"accept": 4, "revise": 1},
-    "moving_averages": {
+    "rolling_averages": {
       "drift_score": 0.12,
       "fact_accuracy_score": 0.9,
       "grammar_clarity_score": 0.88,
-      "format_violations": 0.1
+      "format_violations": 0.1,
+      "section_completion_rate": 0.92,
+      "revision_depth": 1.2
     }
   }
 }
