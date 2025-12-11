@@ -34,7 +34,8 @@ class SpeakerAgent:
         task_spec: TaskSpec = intent_result["task_spec"]
         self._record(intent_message)
 
-        method_result = self.method_circuit.run(run_id, task_spec)
+        method_key = self.method_circuit.resolve_method_key(task_spec.task_type)
+        method_result = self.method_circuit.run(run_id, task_spec, method_key)
         method_message = method_result["message"]
         method_plan = method_result["method_plan"]
         content_package = method_result["content_package"]
