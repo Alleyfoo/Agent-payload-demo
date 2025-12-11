@@ -70,10 +70,11 @@ class SpeakerAgent:
             method_message = method_result["message"]
             method_plan = method_result["method_plan"]
             content_package = method_result["content_package"]
-            revision_delta = method_result["revision_delta"]
+            revision_delta = {"revision": revision, **method_result["revision_delta"]}
             revision_history.append(revision_delta)
             content_package.revision_history = list(revision_history)
             content_package.revision_number = revision
+            content_package.content["revision_history"] = list(revision_history)
             self._record(method_message)
 
             review_result = self.review_circuit.run(run_id, method_plan, content_package)
@@ -106,6 +107,7 @@ class SpeakerAgent:
             method_plan,  # type: ignore[arg-type]
             content_package,  # type: ignore[arg-type]
             revision_history,
+            decision,
         )
 
         return CircuitResult(
@@ -121,10 +123,11 @@ class SpeakerAgent:
         revision_history = result.content.revision_history
         latest_delta = revision_history[-1] if revision_history else {}
         summary = (
-            f"{result.decision.decision.upper()} — revisions: {result.content.revision_number}; "
-            f"added: {latest_delta.get('added_sections', [])}; "
-            f"changed: {latest_delta.get('changed_sections', [])}; "
-            f"drift_score: {result.shadow_report.get('drift_score')}"
+            f"{result.decision.decision.upper()} — total revisions: {len(revision_history)}; "
+            f"latest added: {latest_delta.get('added_sections', [])}; "
+            f"latest changed: {latest_delta.get('changed_sections', [])}; "
+            f"drift_score: {result.shadow_report.get('drift_score')}; "
+            f"section_completion: {result.shadow_report.get('section_completion_rate')}"
         )
         return UserResponse(
             run_id=result.task_spec.run_id,

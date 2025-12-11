@@ -5,7 +5,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Dict, List, Optional
 
-from app.models import ContentPackage, Message, MethodPlan, ReviewReport
+from app.models import ContentPackage, JudgeDecision, Message, MethodPlan, ReviewReport
 
 
 class ShadowAgent:
@@ -24,6 +24,7 @@ class ShadowAgent:
         method_plan: MethodPlan,
         content_package: ContentPackage,
         revision_history: List[Dict[str, object]],
+        decision: Optional[JudgeDecision],
     ) -> Dict[str, object]:
         coverage_gap = 1 - review.section_coverage
         format_violations = len(review.missing_sections)
@@ -31,6 +32,12 @@ class ShadowAgent:
         revision_penalty = content_package.revision_number * 0.08
         fact_accuracy_score = self._fact_accuracy_score(review)
         grammar_clarity_score = self._grammar_clarity_score(run_id, content_package)
+        revision_depth = len(revision_history)
+        section_completion_rate = self._section_completion_rate(
+            method_plan.sections, content_package.content
+        )
+        revision_churn = self._revision_churn(revision_history)
+        churn_penalty = min(0.25, revision_churn * 0.04)
 
         drift_dimensions = {
             "format_adherence": round(review.section_coverage, 3),
@@ -39,6 +46,9 @@ class ShadowAgent:
             "revision_pressure": round(revision_penalty, 3),
             "fact_accuracy": round(fact_accuracy_score, 3),
             "grammar_clarity": round(grammar_clarity_score, 3),
+            "revision_depth": revision_depth,
+            "section_completion": section_completion_rate,
+            "revision_churn": revision_churn,
         }
 
         drift_score = min(
@@ -47,8 +57,9 @@ class ShadowAgent:
                 coverage_gap
                 + warning_penalty
                 + revision_penalty
+                + churn_penalty
                 + (1 - fact_accuracy_score) * 0.6
-                + (1 - grammar_clarity_score) * 0.4,
+                + (1 - grammar_clarity_score) * 0.35,
                 3,
             ),
         )
@@ -66,7 +77,13 @@ class ShadowAgent:
             "uncertainty_expressed": not review.format_ok,
             "drift_dimensions": drift_dimensions,
             "section_coverage": round(review.section_coverage, 3),
+            "section_completion_rate": section_completion_rate,
+            "revision_depth": revision_depth,
+            "revision_churn": revision_churn,
             "revision_history": revision_history,
+            "revision_history_snapshot": revision_history[-3:],
+            "review_decision": decision.decision if decision else "unknown",
+            "review_reason": decision.reason if decision else "",
             "notes": [m.payload for m in self.messages if m.run_id == run_id],
         }
 
@@ -137,6 +154,22 @@ class ShadowAgent:
                     return payload_content
         return None
 
+    def _section_completion_rate(
+        self, sections: List[str], content: Dict[str, object]
+    ) -> float:
+        if not sections:
+            return 0.0
+        completed = sum(1 for section in sections if str(content.get(section, "")).strip())
+        return round(completed / len(sections), 3)
+
+    def _revision_churn(self, revision_history: List[Dict[str, object]]) -> int:
+        churn = 0
+        for entry in revision_history:
+            added = entry.get("added_sections", [])
+            changed = entry.get("changed_sections", [])
+            churn += len(added) + len(changed)
+        return churn
+
     def _update_aggregates(self, current_report: Dict[str, object]) -> Dict[str, object]:
         combined_history = self.history + [current_report]
         window = combined_history[-5:]
@@ -160,6 +193,8 @@ class ShadowAgent:
             "grammar_clarity_score": moving_average("grammar_clarity_score", window),
             "format_violations": moving_average("format_violations", window),
             "section_coverage": moving_average("section_coverage", window),
+            "section_completion_rate": moving_average("section_completion_rate", window),
+            "revision_depth": moving_average("revision_depth", window),
         }
 
         if len(window) > 1:
@@ -172,6 +207,8 @@ class ShadowAgent:
                     "grammar_clarity_score",
                     "format_violations",
                     "section_coverage",
+                    "section_completion_rate",
+                    "revision_depth",
                 ]
                 if isinstance(current_report.get(key), (int, float))
                 and isinstance(previous.get(key), (int, float))
