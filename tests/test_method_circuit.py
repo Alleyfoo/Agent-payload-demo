@@ -2,6 +2,7 @@ import unittest
 
 from app.circuits.method import MethodProducerCircuit
 from app.models import TaskSpec
+from app.utils.llm_client import LLMClient
 
 
 class DummyLLM:
@@ -32,7 +33,7 @@ class ExtractSectionsTest(unittest.TestCase):
 
         self.assertIn("title", extracted)
         self.assertIn("concept", extracted)
-        self.assertEqual(extracted["title"], "A short summary line.")
+        self.assertEqual(extracted["title"], "Lesson intro\nA short summary line.")
         self.assertIn("Concept body goes here.", extracted["concept"])
 
     def test_run_returns_sections_from_marked_headings(self) -> None:
@@ -70,6 +71,28 @@ class ExtractSectionsTest(unittest.TestCase):
         self.assertIn("concept", extracted)
         self.assertNotIn("code_example", extracted)
         self.assertNotIn("exercise", extracted)
+
+    def test_run_with_mock_llm_covers_all_sections(self) -> None:
+        circuit = MethodProducerCircuit(LLMClient(use_mock=True))
+        task_spec = TaskSpec(
+            run_id="run-mock",
+            task_type="lesson_page",
+            topic="list comprehensions",
+            language="en",
+            target_level="beginner",
+            constraints=["markdown output"],
+            status="ok",
+        )
+
+        result = circuit.run("run-mock", task_spec)
+
+        sections_content = result["sections_content"]
+        self.assertEqual(result["content_package"].warnings, [])
+        self.assertTrue(result["content_package"].method_respected)
+        self.assertIn("title", sections_content)
+        self.assertIn("concept", sections_content)
+        self.assertIn("code_example", sections_content)
+        self.assertIn("exercise", sections_content)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ class LLMClient:
         if "lesson_v1" in prompt:
             return (
                 "# Title: Example lesson\n\n"
-                "## Concept\nList comprehension allows compact list creation.\n\n"
+                "## Concept – overview\nList comprehension allows compact list creation.\n\n"
                 "## Code Example\n````python\n[square for square in range(5)]\n````\n\n"
                 "## Exercise\nCreate squares of even numbers up to 10."
             )

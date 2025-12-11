@@ -78,14 +78,17 @@ class MethodProducerCircuit:
             heading_match = re.match(r"^\s*#{1,2}\s*(.+)$", line)
             if heading_match:
                 heading_text = heading_match.group(1).strip()
-                heading_core = re.split(r"[:\-–—]|[.!?]", heading_text, 1)[0]
-                heading_core = heading_core.rstrip(" .,:;–—-").strip()
+                heading_parts = re.split(r"\s*[:\-–—]\s*|[.!?]", heading_text, 1)
+                heading_core = heading_parts[0].rstrip(" .,:;–—-").strip()
+                descriptor_text = heading_parts[1].strip() if len(heading_parts) > 1 else ""
                 normalized_heading = self._normalize(heading_core)
                 key = normalized_required.get(normalized_heading)
                 if current:
                     content_map[current] = "\n".join(buffer).strip()
                 current = key if key else None
                 buffer = []
+                if current and descriptor_text:
+                    buffer.append(descriptor_text)
                 continue
 
             if current:
