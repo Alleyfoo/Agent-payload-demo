@@ -52,6 +52,24 @@ class ExtractSectionsTest(unittest.TestCase):
         self.assertIn("title", sections_content)
         self.assertIn("concept", sections_content)
         self.assertEqual(result["content_package"].warnings, [])
+        self.assertTrue(result["content_package"].method_respected)
+
+    def test_extract_sections_handles_trailing_punctuation_only(self) -> None:
+        response = (
+            "# Title!\n"
+            "Summary line here.\n"
+            "## Concept?\n"
+            "Explanation details."
+        )
+        circuit = MethodProducerCircuit(DummyLLM(response))
+        sections = ["title", "concept", "code_example", "exercise"]
+
+        extracted = circuit._extract_sections(response, sections)
+
+        self.assertIn("title", extracted)
+        self.assertIn("concept", extracted)
+        self.assertNotIn("code_example", extracted)
+        self.assertNotIn("exercise", extracted)
 
 
 if __name__ == "__main__":
