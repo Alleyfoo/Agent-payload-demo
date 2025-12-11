@@ -29,6 +29,22 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
      -d '{"message": "Tarvitsen oppitunnin Python-lista comprehensioneista suomeksi"}'
    ```
 
+   Esimerkkivastaus sisältää nyt revisiohistorian (lisätyt/muokatut osiot):
+
+   ```json
+   {
+     "run_id": "...",
+     "decision": "accept",
+     "summary": "ACCEPT — revisions: 1; added: ['title', 'concept', 'code_example', 'exercise']; changed: []; drift_score: 0.0",
+     "content": {
+       "format": "lesson_v1",
+       "title": null,
+       "raw": "# Title: Example lesson..."
+     },
+     "shadow_report_path": "data/shadow_reports.jsonl"
+   }
+   ```
+
 ### Docker
 
 ```bash
