@@ -122,19 +122,28 @@ class SpeakerAgent:
     def build_user_response(self, result: CircuitResult) -> UserResponse:
         revision_history = result.content.revision_history
         latest_delta = revision_history[-1] if revision_history else {}
+        method_name = result.method_plan.format
+        resolved_task_type = self.method_circuit.resolve_method_key(result.task_spec.task_type)
         summary = (
             f"{result.decision.decision.upper()} — total revisions: {len(revision_history)}; "
             f"latest added: {latest_delta.get('added_sections', [])}; "
             f"latest changed: {latest_delta.get('changed_sections', [])}; "
+            f"method: {method_name} (task_type: {resolved_task_type}); "
             f"drift_score: {result.shadow_report.get('drift_score')}; "
             f"section_completion: {result.shadow_report.get('section_completion_rate')}"
         )
+        revision_summary = {
+            "method": method_name,
+            "task_type": resolved_task_type,
+            "revision_history": revision_history,
+        }
         return UserResponse(
             run_id=result.task_spec.run_id,
             decision=result.decision.decision,
             summary=summary,
             content=result.content.content,
             shadow_report_path=str(self.shadow.storage_path),
+            revision_summary=revision_summary,
         )
 
     def process_and_summarize(self, user_message: str) -> Dict[str, object]:

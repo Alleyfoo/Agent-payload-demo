@@ -117,6 +117,67 @@ class MethodProducerCircuit:
                 "## Shortcuts: git switch <branch>; git restore --staged <file> to unstage.",
             ],
         },
+        "design_doc": {
+            "format": "design_doc_v1",
+            "description": "Architecture design document with decisions and rationale",
+            "sections": [
+                "context",
+                "goals",
+                "non_goals",
+                "architecture",
+                "tradeoffs",
+                "open_questions",
+            ],
+            "section_schemas": {
+                "context": "Problem statement, stakeholders, and constraints.",
+                "goals": "Numbered, testable goals for the design.",
+                "non_goals": "Out-of-scope items that will not be addressed.",
+                "architecture": "Proposed system shape with components and data flows.",
+                "tradeoffs": "Key alternatives considered and why this design was chosen.",
+                "open_questions": "Known unknowns, risks, and follow-ups.",
+            },
+            "guidance": "Prefer diagrams-in-words and be explicit about decisions and risks.",
+        },
+        "postmortem": {
+            "format": "postmortem_v1",
+            "description": "Blameless incident review with corrective actions",
+            "sections": [
+                "incident_summary",
+                "impact",
+                "root_cause",
+                "timeline",
+                "corrective_actions",
+                "prevention",
+            ],
+            "section_schemas": {
+                "incident_summary": "Short description with when, what, who was affected.",
+                "impact": "Customer/user impact, duration, and severity.",
+                "root_cause": "Primary cause(s) with evidence.",
+                "timeline": "Chronological list of key events with timestamps.",
+                "corrective_actions": "Concrete fixes with owners and due dates.",
+                "prevention": "Longer-term hardening and monitoring steps.",
+            },
+            "guidance": "Keep tone blameless; focus on evidence and owned actions.",
+        },
+        "comparison": {
+            "format": "comparison_v1",
+            "description": "Side-by-side comparison with scored criteria",
+            "sections": [
+                "subject",
+                "criteria",
+                "scorecard",
+                "recommendation",
+                "risks",
+            ],
+            "section_schemas": {
+                "subject": "What is being compared and the decision to be made.",
+                "criteria": "Evaluation criteria with weights or importance.",
+                "scorecard": "Table or bullets scoring options against criteria.",
+                "recommendation": "Clear pick with rationale tied to criteria.",
+                "risks": "Caveats, migration cost, or follow-up checks.",
+            },
+            "guidance": "Lead with the recommendation; keep scoring transparent.",
+        },
     }
 
     def __init__(self, llm: LLMClient) -> None:
@@ -137,6 +198,15 @@ class MethodProducerCircuit:
             "plan": "project_plan",
             "project": "project_plan",
             "study": "study_guide",
+            "design": "design_doc",
+            "architecture": "design_doc",
+            "adr": "design_doc",
+            "post_mortem": "postmortem",
+            "incident_review": "postmortem",
+            "retro": "postmortem",
+            "versus": "comparison",
+            "vs": "comparison",
+            "compare": "comparison",
         }
         return fallback_map.get(task_type, "lesson_page")
 
