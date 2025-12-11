@@ -66,6 +66,42 @@ Säilöö `data/`-hakemiston kontista isäntään.
 - `app/utils/llm_client.py`: Ollama-kutsu tai mock
 - `data/`: VarjoAgentin raportit (JSONL)
 
+## Tehtävätyypit ja metodit
+
+PuhemiesAgentti ohjaa MetodiPiiriin tehtävätyypin (`task_type`) perusteella, jolloin sisällöntuotannon metodi ja osiot vaihtuvat. Tuetut tyypit:
+
+- `lesson_page`: lyhyt teoria + harjoitus (osiot: title, concept, code_example, exercise)
+- `tutorial`: askel-askeleelta -ohje käytännön tavoitteeseen (title, overview, steps, validation, next_steps)
+- `reference`: tiivis muistilappu syntaksista ja optioista (summary, api_surface, usage_examples, caveats)
+- `troubleshooting`: vianmääritys ja korjauspolku (issue_summary, root_causes, diagnostic_steps, fixes, prevention)
+
+### Esimerkkipayloadit
+
+LLM:lle rakentuva `TaskSpec`-rakenne näyttää tältä (kentät täytetään IntentioPiirissä):
+
+```json
+{
+  "task_type": "tutorial",
+  "topic": "Docker-kontin rakentaminen Python-sovellukselle",
+  "language": "fi",
+  "target_level": "intermediate",
+  "constraints": ["markdown output", "sisällytä komennot"]
+}
+```
+
+Vastaavasti vianmääritykseen voidaan käyttää `troubleshooting`-tyyppiä:
+
+```json
+{
+  "task_type": "troubleshooting",
+  "topic": "FastAPI sovellus palauttaa 500-virheen kun tietokanta ei vastaa",
+  "language": "fi",
+  "target_level": "advanced",
+  "constraints": ["listaa tarkistuskomennot", "lyhyet korjausvaiheet"]
+}
+```
+
+## Jatkokehitysideoita
 ## VarjoAgentin raportointi ja metriikat
 
 VarjoAgentti kerää jokaisesta ajosta sekä juoksukohtaiset mitat että kumulatiiviset aggregaatit ja kirjoittaa ne JSONL-riviin tiedostoon `data/shadow_reports.jsonl`.
