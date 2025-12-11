@@ -106,6 +106,26 @@ class ExtractSectionsTest(unittest.TestCase):
         self.assertIn("code_example", sections_content)
         self.assertIn("exercise", sections_content)
 
+    def test_run_mock_output_with_heading_descriptors_has_no_missing_warnings(self) -> None:
+        circuit = MethodProducerCircuit(LLMClient(use_mock=True))
+        task_spec = TaskSpec(
+            run_id="run-heading",
+            task_type="lesson_page",
+            topic="mock headings",
+            language="en",
+            target_level="beginner",
+            constraints=["markdown output"],
+            status="ok",
+        )
+
+        result = circuit.run("run-heading", task_spec)
+
+        self.assertEqual(result["content_package"].warnings, [])
+        self.assertEqual(
+            set(result["sections_content"].keys()),
+            {"title", "concept", "code_example", "exercise"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
