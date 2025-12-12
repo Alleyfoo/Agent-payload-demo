@@ -40,6 +40,8 @@ class ShadowAgent:
         churn_penalty = min(0.25, revision_churn * 0.04)
         drift_velocity = self._drift_velocity("drift_score")
         coverage_trend = self._drift_velocity("section_completion_rate")
+        trace = self._build_trace(run_id)
+        graph = self._build_graph(trace)
 
         drift_dimensions = {
             "format_adherence": round(review.section_coverage, 3),
@@ -92,6 +94,8 @@ class ShadowAgent:
             "revision_history_snapshot": revision_history[-3:],
             "review_decision": decision.decision if decision else "unknown",
             "review_reason": decision.reason if decision else "",
+            "trace": trace,
+            "graph": graph,
             "notes": [m.payload for m in self.messages if m.run_id == run_id],
         }
 
@@ -270,3 +274,62 @@ class ShadowAgent:
 
         self.history = combined_history
         return aggregates
+
+    def _build_trace(self, run_id: str) -> List[Dict[str, object]]:
+        trace: List[Dict[str, object]] = []
+        for message in self.messages:
+            if message.run_id != run_id:
+                continue
+            trace.append(
+                {
+                    "sender": message.sender,
+                    "recipient": message.recipient,
+                    "role": message.role,
+                    "timestamp": message.timestamp,
+                    "payload": message.payload,
+                }
+            )
+        return trace
+
+    def _build_graph(self, trace: List[Dict[str, object]]) -> Dict[str, object]:
+        nodes: Dict[str, Dict[str, str]] = {}
+        edge_map: Dict[tuple[str, str], Dict[str, object]] = {}
+
+        for entry in trace:
+            sender = str(entry.get("sender", "unknown"))
+            recipient = str(entry.get("recipient", "unknown"))
+            nodes[sender] = {"id": sender}
+            nodes[recipient] = {"id": recipient}
+
+            key = (sender, recipient)
+            if key not in edge_map:
+                edge_map[key] = {
+                    "source": sender,
+                    "target": recipient,
+                    "count": 0,
+                    "roles": [],
+                    "latest_timestamp": entry.get("timestamp"),
+                }
+
+            edge = edge_map[key]
+            edge["count"] = int(edge["count"]) + 1  # type: ignore[assignment]
+            role = entry.get("role")
+            if isinstance(role, str) and role not in edge["roles"]:  # type: ignore[index]
+                edge["roles"].append(role)  # type: ignore[index]
+            edge["latest_timestamp"] = entry.get("timestamp")
+
+        return {
+            "nodes": list(nodes.values()),
+            "edges": list(edge_map.values()),
+        }
+
+    def get_history(self, limit: Optional[int] = None) -> List[Dict[str, object]]:
+        if limit is None or limit <= 0:
+            return list(self.history)
+        return self.history[-limit:]
+
+    def get_run(self, run_id: str) -> Optional[Dict[str, object]]:
+        for report in reversed(self.history):
+            if report.get("run_id") == run_id:
+                return report
+        return None

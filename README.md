@@ -58,6 +58,12 @@ Moniagenttisen "piiriarkkitehtuurin" v1-MVP, jossa keskitetty PuhemiesAgentti or
 docker-compose up --build
 ```
 
+## Monitorointi ja piiri-nAkymA
+
+- KAynnistA API (esim. `uvicorn app.main:app --reload`) ja avaa `http://localhost:8000/monitor/dashboard` selaimessa: nAet agenttien verkon (User -> PuhemiesAgentti -> piirit) sekA viestien aikaleimat.
+- Raakadatan voi hakea JSON-muodossa: `GET /monitor/runs?limit=20` (viimeiset ajot), `GET /monitor/runs/{run_id}`, ja `GET /monitor/graph` (viimeisin graafi + trace).
+- Raportit tallennetaan tiedostoon `data/shadow_reports.jsonl`, joten dashboard nAyttAA myAs uudelleenkAynnistyksen jAlkeen kertyneen historian.
+
 Säilöö `data/`-hakemiston kontista isäntään.
 
 ## LLM-integraatio
