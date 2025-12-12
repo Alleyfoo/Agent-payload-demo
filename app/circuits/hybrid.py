@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, List
 import re
 
 from app.models import (
@@ -272,6 +272,14 @@ class HealingComposer:
     ) -> BuddhistResult:
         breathing = breathing or {}
         constraints = constraints or []
+        pipeline_constraints: List[str] = []
+        if header.task_type == "data_pipeline_design":
+            pipeline_constraints = [
+                "Return ONLY JSON (no markdown).",
+                "Top-level keys must be: pipeline_steps, data_flow, failure_recovery, artifacts, assumptions.",
+                "In pipeline_steps include EXACT stage names as a list: ingestion, file_manifest, classification, extraction_text, extraction_tables, ocr_branch, validation, xlsx_writer, audit_log, checkpointing_resume, error_policy.",
+            ]
+        constraints = constraints + pipeline_constraints
         breathing_line = ""  # keep persona/metadata out of user view
         constraints_line = ""
         if constraints:
@@ -321,6 +329,14 @@ class SelfishComposer:
     ) -> BuddhistResult:
         breathing = breathing or {}
         constraints = constraints or []
+        pipeline_constraints: List[str] = []
+        if header.task_type == "data_pipeline_design":
+            pipeline_constraints = [
+                "Return ONLY JSON (no markdown).",
+                "Top-level keys must be: pipeline_steps, data_flow, failure_recovery, artifacts, assumptions.",
+                "In pipeline_steps include EXACT stage names as a list: ingestion, file_manifest, classification, extraction_text, extraction_tables, ocr_branch, validation, xlsx_writer, audit_log, checkpointing_resume, error_policy.",
+            ]
+        constraints = constraints + pipeline_constraints
         breathing_line = ""  # keep persona/metadata out of user view
         constraints_line = ""
         if constraints:

@@ -4,6 +4,10 @@ import os
 import uuid
 import re
 import json
+import copy
+import threading
+import tempfile
+from pathlib import Path
 from dataclasses import asdict
 from typing import Dict, List, Any
 
@@ -38,9 +42,16 @@ from app.models import (
     TaoistIntent,
     UserResponse,
     Verdict,
+    ToolPlan,
+    ToolStep,
+    ToolLimits,
 )
 from app.patch_detector import PatchDetector
 from app.regulator import CompassionateRegulator
+from app.state_store import load_params, save_params
+from app.run_context import RunContext
+from app.tools.dataset_registry import DatasetRegistry
+from app.tools.executor import execute_tool_plan
 from app.utils.llm_client import LLMClient
 
 
@@ -61,8 +72,12 @@ class SpeakerAgent:
         self.context_state = ContextStateCircuit()
         self.patch_detector = PatchDetector()
         self.patch_resolver = PatchResolverCircuit(normalizer=self._normalize_fastener_rows)
-        self.agent_params = default_params()
+        stored_params = load_params()
+        self.agent_params = stored_params or default_params()
         self.regulator = CompassionateRegulator(self.agent_params)
+        self._params_lock = threading.RLock()
+        self._ctx_lock = threading.RLock()
+        self.tools_enabled = os.getenv("TOOLS_ENABLED", "0") not in {"0", "false", "False", ""}
         try:
             configured_revisions = int(os.getenv("MAX_REVISIONS", "2"))
         except ValueError:
@@ -92,15 +107,139 @@ class SpeakerAgent:
             cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
         return cleaned.strip()
 
-    def _apply_task_type_override(self, header: PuhemiesHeader, task_type: str) -> PuhemiesHeader:
+    def _get_artifact_state(self):
+        with self._ctx_lock:
+            return self.context_state.get_state()
+
+    def _has_artifact(self) -> bool:
+        with self._ctx_lock:
+            return self.context_state.has_artifact()
+
+    def _set_artifact_state(self, artifact: Any, artifact_type: str | None = None, schema: Dict[str, Any] | None = None) -> None:
+        with self._ctx_lock:
+            self.context_state.set_artifact(artifact, artifact_type=artifact_type, schema=schema)
+
+    def _params_snapshot(self) -> Dict[str, Any]:
+        with self._params_lock:
+            return copy.deepcopy(self.agent_params)
+
+    def _tool_override(self, user_message: str) -> str | None:
+        lower = user_message.lower()
+        if "no tool" in lower or "älä aja koodia" in lower or "do not run code" in lower:
+            return "deny"
+        if "run python" in lower or "force tool" in lower or "ajA python" in lower:
+            return "force"
+        return None
+
+    def _should_use_tools(self, user_message: str) -> bool:
+        lower = user_message.lower()
+        keywords = [
+            "pandas",
+            "numpy",
+            "csv",
+            "excel",
+            "xlsx",
+            "sql",
+            "select",
+            "groupby",
+            "pivot",
+            "merge",
+            "join",
+            "dedup",
+            "validate schema",
+            "fill missing",
+            "dataframe",
+        ]
+        return any(k in lower for k in keywords)
+
+    def _build_tool_plan_from_artifact(self, artifact: Any) -> tuple[ToolPlan | None, DatasetRegistry | None, str | None]:
+        if not isinstance(artifact, list) or not artifact or not isinstance(artifact[0], dict):
+            return None, None, "artifact_not_tabular"
+        temp_dir = Path(tempfile.mkdtemp(prefix="tool_artifact_"))
+        artifact_path = temp_dir / "artifact.json"
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        registry = DatasetRegistry()
+        registry.register("artifact_json", artifact_path)
+        code = """
+import json, csv
+with open("artifact.json") as f:
+    rows = json.load(f)
+if isinstance(rows, dict):
+    rows = [rows]
+if not rows:
+    raise SystemExit("No rows to process")
+fields = list(rows[0].keys())
+with open("output.csv","w",newline="") as f:
+    w = csv.DictWriter(f, fieldnames=fields)
+    w.writeheader(); w.writerows(rows)
+with open("preview.json","w") as f:
+    json.dump(rows[:1], f)
+"""
+        step = ToolStep(
+            step_id="python_artifact_passthrough",
+            kind="python",
+            payload=code,
+            expected_output=list(artifact[0].keys()),
+            output_artifact_key="output_csv_path",
+        )
+        plan = ToolPlan(steps=[step], limits=ToolLimits(timeout_seconds=10))
+        return plan, registry, None
+
+    @staticmethod
+    def _apply_task_type_override(header: PuhemiesHeader, task_type: str) -> PuhemiesHeader:
         """Allow UI to force a task type while keeping other header defaults stable."""
         override = task_type.strip()
         if not override:
             return header
         header.task_type = override
-        header.required_grounding = override == "weather_lookup"
-        if not header.user_intent or header.user_intent.lower() == "general request":
-            header.user_intent = f"User-selected: {override}"
+
+        presets = {
+            "weather_lookup": {
+                "user_intent": "Wants current weather now",
+                "required_grounding": True,
+                "notes": "Do NOT invent live conditions; prefer tool or explicit limitation.",
+            },
+            "data_pipeline_design": {
+                "user_intent": "Design a data pipeline",
+                "required_grounding": False,
+                "notes": "Return concrete pipeline steps, data flow, recovery, and artifacts.",
+            },
+            "debugging": {
+                "user_intent": "Debugging request",
+                "required_grounding": False,
+                "notes": "Focus on diagnosis and fix; do not hallucinate tools.",
+            },
+            "data_extraction": {
+                "user_intent": "Data extraction or normalization",
+                "required_grounding": False,
+                "notes": "Return structured JSON; do not hallucinate grounding.",
+            },
+            "policy_update": {
+                "user_intent": "Policy/rule update",
+                "required_grounding": False,
+                "notes": "Apply/modify rules; keep domain fixed.",
+            },
+            "math": {
+                "user_intent": "Math or numeric transform",
+                "required_grounding": False,
+                "notes": "Numeric task; do not hallucinate grounding.",
+            },
+            "general_help": {
+                "user_intent": "General request",
+                "required_grounding": False,
+                "notes": "",
+            },
+        }
+
+        profile = presets.get(override, {})
+        if profile:
+            header.user_intent = profile.get("user_intent", header.user_intent)
+            header.required_grounding = profile.get("required_grounding", header.required_grounding)
+            header.notes = profile.get("notes", header.notes)
+        else:
+            if not header.user_intent or header.user_intent.lower() == "general request":
+                header.user_intent = f"User-selected: {override}"
+            header.required_grounding = override == "weather_lookup"
         note_suffix = "Task type overridden by user selection."
         header.notes = f"{header.notes} | {note_suffix}" if header.notes else note_suffix
         return header
@@ -222,16 +361,6 @@ class SpeakerAgent:
                         if key != "material":
                             row[key] = None
         return rows
-
-    def _validate_schema(self, data: Any, expected_keys: List[str] | None = None) -> bool:
-        if not isinstance(data, list) or not data:
-            return False
-        for row in data:
-            if not isinstance(row, dict):
-                return False
-            if expected_keys and set(row.keys()) != set(expected_keys):
-                return False
-        return True
 
     def _validate_schema(self, data: Any, expected_keys: List[str] | None = None) -> bool:
         if not isinstance(data, list) or not data:
@@ -373,6 +502,7 @@ class SpeakerAgent:
         run_id = self.new_run_id()
         energy_vec = energy or EnergyVector.infer(user_message)
         hexagram = HexagramState(hexagram_id, name="unspecified" if hexagram_id else "neutral")
+        params_snapshot = self._params_snapshot()
 
         self._record(
             Message(
@@ -394,10 +524,12 @@ class SpeakerAgent:
 
         healing_result = self.buddhist_circuit.run(run_id, user_message, taoist_intent, energy_vec, hexagram)
         healing_response: BuddhistResponse = healing_result.response
+        healing_response.content = self._firewall(healing_response.content)
         self._record(healing_result.message)
 
         selfish_result = self.selfish_circuit.run(run_id, user_message, taoist_intent, energy_vec, hexagram)
         selfish_response: BuddhistResponse = selfish_result.response
+        selfish_response.content = self._firewall(selfish_response.content)
         self._record(selfish_result.message)
 
         comparison = self.shadow.compare_outputs(
@@ -444,6 +576,116 @@ class SpeakerAgent:
         run_id = self.new_run_id()
         energy_vec = energy or EnergyVector.infer(user_message)
         hexagram = HexagramState(hexagram_id, name="unspecified" if hexagram_id else "neutral")
+        params_snapshot = self._params_snapshot()
+        patch_info = self.patch_detector.detect(user_message)
+        tool_override = self._tool_override(user_message)
+
+        # Fast-path: deterministic patching on existing artifact (skip LLMs)
+        if patch_info.get("is_patch") and self._has_artifact():
+            header: PuhemiesHeader = self.classifier.classify(user_message)
+            if task_type:
+                header = self._apply_task_type_override(header, task_type)
+            self._record(
+                Message(
+                    run_id=run_id,
+                    sender="User",
+                    recipient="PuhemiesAgentti",
+                    role="instruction",
+                    payload={"message": user_message, "energy": energy_vec.as_dict(), "hexagram": hexagram.label(), "header": header.__dict__, "patch": patch_info},
+                )
+            )
+            state = self._get_artifact_state()
+            before_artifact = state.active_artifact
+            patch_result = self.patch_resolver.apply_patch(user_message, state.active_artifact)
+            if patch_result.updated_artifact is not None:
+                updated_artifact = patch_result.updated_artifact
+                schema = state.schema or ({"unknown": "unknown"} if not (isinstance(updated_artifact, list) and updated_artifact and isinstance(updated_artifact[0], dict)) else {k: "unknown" for k in updated_artifact[0].keys()})
+                schema_ok = True
+                new_keys: list[str] = []
+                if state.schema and isinstance(state.schema, dict):
+                    schema_keys = set(state.schema.keys())
+                    if not self._validate_schema(updated_artifact, list(schema_keys)):
+                        schema_ok = False
+                    for row in updated_artifact if isinstance(updated_artifact, list) else []:
+                        if isinstance(row, dict):
+                            extra = set(row.keys()) - schema_keys
+                            if extra:
+                                new_keys.extend(sorted(extra))
+                                schema_ok = False
+                artifact_type = state.artifact_type or "extraction_result"
+                if schema_ok:
+                    self._set_artifact_state(updated_artifact, artifact_type=artifact_type, schema=schema if isinstance(schema, dict) else None)
+                    rendered = self._firewall(patch_result.rendered)
+                    diff_note = {"changed": patch_result.notes, "new_keys": new_keys}
+                    self._record(
+                        Message(
+                            run_id=run_id,
+                            sender="PatchResolver",
+                            recipient="PuhemiesAgentti",
+                            role="patch_applied",
+                            payload={
+                                "artifact_type": artifact_type,
+                                "schema_ok": schema_ok,
+                                "notes": patch_result.notes,
+                                "schema": schema,
+                                "header": header.__dict__,
+                                "before_len": len(before_artifact) if isinstance(before_artifact, list) else 0,
+                                "after_len": len(updated_artifact) if isinstance(updated_artifact, list) else 0,
+                                "diff": diff_note,
+                            },
+                        )
+                    )
+                    self.shadow.prune_run(run_id)
+                    return {
+                        "run_id": run_id,
+                        "header": header.__dict__,
+                        "taoist_intent": "skipped (patch fast-path)",
+                        "grounding": {},
+                        "healing_response": rendered,
+                        "selfish_response": rendered,
+                        "verdict": "patch_applied",
+                        "patch_applied": True,
+                        "patch_type": patch_info.get("reason", "patch"),
+                        "alternatives": None,
+                        "regulation": {"fast_path": "patch", "schema_ok": schema_ok},
+                        "shadow_report_path": str(self.shadow.storage_path),
+                    }
+                rendered = self._firewall(patch_result.rendered)
+                rendered += "\n\nSchema warning: patched artifact rejected due to schema mismatch."
+                self._record(
+                    Message(
+                        run_id=run_id,
+                        sender="PatchResolver",
+                        recipient="PuhemiesAgentti",
+                        role="patch_rejected",
+                        payload={"artifact_type": artifact_type, "schema_ok": schema_ok, "new_keys": new_keys, "header": header.__dict__},
+                    )
+                )
+                self.shadow.prune_run(run_id)
+                return {
+                    "run_id": run_id,
+                    "header": header.__dict__,
+                    "taoist_intent": "skipped (patch fast-path)",
+                    "grounding": {},
+                    "healing_response": rendered,
+                    "selfish_response": rendered,
+                    "verdict": "patch_rejected_schema",
+                    "patch_applied": False,
+                    "patch_type": patch_info.get("reason", "patch"),
+                    "alternatives": None,
+                    "regulation": {"fast_path": "patch", "schema_ok": False, "new_keys": new_keys},
+                    "shadow_report_path": str(self.shadow.storage_path),
+                }
+            else:
+                self._record(
+                    Message(
+                        run_id=run_id,
+                        sender="PatchResolver",
+                        recipient="PuhemiesAgentti",
+                        role="patch_failed",
+                        payload={"reason": patch_result.notes, "header": header.__dict__},
+                    )
+                )
 
         # Step 1: Puhemies classification
         header: PuhemiesHeader = self.classifier.classify(user_message)
@@ -464,6 +706,64 @@ class SpeakerAgent:
         taoist_intent: TaoistIntent = taoist_result.intent
         self._record(taoist_result.message)
 
+        # Optional tool branch (heuristic + override)
+        tool_executed = False
+        tool_result_payload: Dict[str, Any] = {}
+        use_tools = self.tools_enabled and self._should_use_tools(user_message)
+        if tool_override == "force":
+            use_tools = True
+        if tool_override == "deny":
+            use_tools = False
+
+        if use_tools:
+            plan, registry, tool_reason = self._build_tool_plan_from_artifact(self._get_artifact_state().active_artifact if self._has_artifact() else None)
+            if plan and registry:
+                run_ctx = RunContext(run_id=run_id, params_snapshot=params_snapshot, artifact_snapshot=self._get_artifact_state().__dict__ if self._has_artifact() else None)
+                tool_result = execute_tool_plan(plan, run_ctx, registry)
+                tool_result_payload = {
+                    "stdout": tool_result.stdout,
+                    "stderr": tool_result.stderr,
+                    "metrics": tool_result.metrics,
+                    "artifacts": tool_result.artifacts,
+                    "schema_ok": tool_result.schema_ok,
+                    "schema_errors": tool_result.schema_errors,
+                    "new_keys": tool_result.new_keys,
+                }
+                tool_executed = tool_result.success and tool_result.schema_ok
+                if tool_executed and tool_result.artifacts.get("preview"):
+                    # If preview exists and has rows, update artifact
+                    preview = tool_result.artifacts.get("preview")
+                    if isinstance(preview, list):
+                        self._set_artifact_state(preview, artifact_type="tool_result", schema={k: "unknown" for k in preview[0].keys()} if preview and isinstance(preview[0], dict) else {})
+                verdict_str = "tool_executed" if tool_executed else "tool_failed"
+                self._record(
+                    Message(
+                        run_id=run_id,
+                        sender="ToolExecutor",
+                        recipient="PuhemiesAgentti",
+                        role="tool_result",
+                        payload={"verdict": verdict_str, **tool_result_payload},
+                    )
+                )
+                if tool_executed:
+                    self.shadow.prune_run(run_id)
+                    return {
+                        "run_id": run_id,
+                        "header": header.__dict__,
+                        "taoist_intent": taoist_intent.intent,
+                        "grounding": {},
+                        "healing_response": "tool_executed",
+                        "selfish_response": "tool_executed",
+                        "verdict": "tool_executed",
+                        "patch_applied": False,
+                        "tool_executed": True,
+                        "tool_metrics": tool_result.metrics,
+                        "schema_ok": tool_result.schema_ok,
+                        "shadow_report_path": str(self.shadow.storage_path),
+                    }
+            else:
+                tool_result_payload = {"reason": tool_reason or "no_artifact_for_tool"}
+
         # Step 3: Grounding plan
         grounding_plan: GroundingPlan = self.grounding.plan(header, taoist_intent)
         self._record(
@@ -483,7 +783,7 @@ class SpeakerAgent:
             header,
             taoist_intent,
             grounding_plan,
-            breathing=self.agent_params.get("healing", None).as_dict() if self.agent_params.get("healing") else None,
+            breathing=params_snapshot.get("healing", None).as_dict() if params_snapshot.get("healing") else None,
         )
         healing_response: BuddhistResponse = healing_result.response
         healing_response.content = self._firewall(healing_response.content)
@@ -495,7 +795,7 @@ class SpeakerAgent:
             schema = {}
             if isinstance(artifact, list) and artifact and isinstance(artifact[0], dict):
                 schema = {k: "unknown" for k in artifact[0].keys()}
-            self.context_state.set_artifact(artifact, artifact_type="extraction_result", schema=schema)
+                self._set_artifact_state(artifact, artifact_type="extraction_result", schema=schema)
         else:
             # Attempt a constrained regeneration for extraction tasks
             if header.task_type in ("data_extraction", "math") or "output json" in user_message.lower():
@@ -509,7 +809,7 @@ class SpeakerAgent:
                     header,
                     taoist_intent,
                     grounding_plan,
-                    breathing=self.agent_params.get("healing", None).as_dict() if self.agent_params.get("healing") else None,
+                    breathing=params_snapshot.get("healing", None).as_dict() if params_snapshot.get("healing") else None,
                     constraints=regen_constraints,
                 )
                 healing_response = healing_result.response
@@ -522,7 +822,7 @@ class SpeakerAgent:
                     schema = {}
                     if isinstance(artifact, list) and artifact and isinstance(artifact[0], dict):
                         schema = {k: "unknown" for k in artifact[0].keys()}
-                    self.context_state.set_artifact(artifact, artifact_type="extraction_result", schema=schema)
+                    self._set_artifact_state(artifact, artifact_type="extraction_result", schema=schema)
 
         # Step 5: Selfish candidate
         selfish_result = self.selfish_composer.run(
@@ -531,26 +831,37 @@ class SpeakerAgent:
             header,
             taoist_intent,
             grounding_plan,
-            breathing=self.agent_params.get("selfish", None).as_dict() if self.agent_params.get("selfish") else None,
+            breathing=params_snapshot.get("selfish", None).as_dict() if params_snapshot.get("selfish") else None,
         )
         selfish_response: BuddhistResponse = selfish_result.response
         selfish_response.content = self._firewall(selfish_response.content)
         self._record(selfish_result.message)
 
-        patch_info = self.patch_detector.detect(user_message)
-        patch_needs_artifact = patch_info.get("needs_artifact", False) and not self.context_state.has_artifact()
+        patch_needs_artifact = patch_info.get("needs_artifact", False) and not self._has_artifact()
 
         # If patch requested and we have an artifact, apply it deterministically
-        if patch_info.get("is_patch") and self.context_state.has_artifact():
-            state = self.context_state.get_state()
+        if patch_info.get("is_patch") and self._has_artifact():
+            state = self._get_artifact_state()
             result = self.patch_resolver.apply_patch(user_message, state.active_artifact)
             if result.updated_artifact is not None:
                 updated_artifact = result.updated_artifact
                 schema = {}
                 if isinstance(updated_artifact, list) and updated_artifact and isinstance(updated_artifact[0], dict):
                     schema = {k: "unknown" for k in updated_artifact[0].keys()}
-                self.context_state.set_artifact(updated_artifact, artifact_type=state.artifact_type or "extraction_result", schema=schema)
-                healing_response.content = self._firewall(result.rendered)
+                extra_keys = set()
+                if state.schema and isinstance(state.schema, dict):
+                    schema_keys = set(state.schema.keys())
+                    for row in updated_artifact:
+                        if isinstance(row, dict):
+                            extra_keys.update(set(row.keys()) - schema_keys)
+                    if extra_keys:
+                        healing_response.content = self._firewall(result.rendered + "\n\nSchema warning: new keys rejected.")
+                    else:
+                        self._set_artifact_state(updated_artifact, artifact_type=state.artifact_type or "extraction_result", schema=schema)
+                        healing_response.content = self._firewall(result.rendered)
+                else:
+                    self._set_artifact_state(updated_artifact, artifact_type=state.artifact_type or "extraction_result", schema=schema)
+                    healing_response.content = self._firewall(result.rendered)
 
         # Checkup contract (dynamic rubric/gates)
         contract_obj = build_evaluation_contract(
@@ -600,33 +911,37 @@ class SpeakerAgent:
 
         # compassionate regulator: adjust underperformer, optional retry once
         regulation_info: Dict[str, object] | None = None
-        regulation = self.regulator.regulate(
-            Verdict(
-                winner=comparison.get("winner", ""),
-                scores={
-                    aid: CandidateScores(
-                        correctness=score.get("correctness", 0),
-                        truth=score.get("truth", 0),
-                        task_fit=score.get("task_fit", 0),
-                        clarity=score.get("clarity", 0),
-                        tone=score.get("tone", 0),
-                        safety=str(score.get("safety", "pass")),
-                        utility=score.get("utility", 0),
-                    )
-                    for aid, score in comparison.get("scores", {}).items()
-                },
-                reason=comparison.get("verdict", ""),
-                confidence=float(comparison.get("confidence", 0.8)),
-                ranked=comparison.get("ranked", []),
-                issues=comparison.get("issues", {}),
+        with self._params_lock:
+            regulation = self.regulator.regulate(
+                Verdict(
+                    winner=comparison.get("winner", ""),
+                    scores={
+                        aid: CandidateScores(
+                            correctness=score.get("correctness", 0),
+                            truth=score.get("truth", 0),
+                            task_fit=score.get("task_fit", 0),
+                            clarity=score.get("clarity", 0),
+                            tone=score.get("tone", 0),
+                            safety=str(score.get("safety", "pass")),
+                            utility=score.get("utility", 0),
+                        )
+                        for aid, score in comparison.get("scores", {}).items()
+                    },
+                    reason=comparison.get("verdict", ""),
+                    confidence=float(comparison.get("confidence", 0.8)),
+                    ranked=comparison.get("ranked", []),
+                    issues=comparison.get("issues", {}),
+                    required_grounding=header.required_grounding,
+                    gate_violations=comparison.get("gate_violations", {}),
+                ),
                 required_grounding=header.required_grounding,
-                gate_violations=comparison.get("gate_violations", {}),
-            ),
-            required_grounding=header.required_grounding,
-            contract=contract_dict,
-        )
+                contract=contract_dict,
+            )
+            if regulation:
+                save_params(self.agent_params)
 
         before_text = {"healing": healing_response.content, "selfish": selfish_response.content}
+        params_snapshot = self._params_snapshot()
 
         if regulation and regulation.retry:
             if regulation.agent_id == "healing":
@@ -636,7 +951,7 @@ class SpeakerAgent:
                     header,
                     taoist_intent,
                     grounding_plan,
-                    breathing=self.agent_params.get("healing", None).as_dict() if self.agent_params.get("healing") else None,
+                    breathing=params_snapshot.get("healing", None).as_dict() if params_snapshot.get("healing") else None,
                     constraints=regulation.behavioral_constraints,
                 )
                 healing_response = healing_result.response
@@ -649,7 +964,7 @@ class SpeakerAgent:
                     header,
                     taoist_intent,
                     grounding_plan,
-                    breathing=self.agent_params.get("selfish", None).as_dict() if self.agent_params.get("selfish") else None,
+                    breathing=params_snapshot.get("selfish", None).as_dict() if params_snapshot.get("selfish") else None,
                     constraints=regulation.behavioral_constraints,
                 )
                 selfish_response = selfish_result.response

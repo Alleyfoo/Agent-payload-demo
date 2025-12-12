@@ -32,17 +32,47 @@ class PatchDetector:
         "adjust",
         "fix",
         "treat",
-        "set",
+    ]
+    CONTEXT_ANCHORS = [
+        "previous",
+        "edellinen",
+        "above",
+        "list",
+        "table",
+        "taulukko",
+        "artefakti",
+        "artifact",
+        "json",
+        "jsonpath",
+        "row",
+        "rows",
+        "column",
+        "col",
+        "field",
+        "key",
+        "entry",
     ]
 
     def detect(self, text: str) -> Dict[str, object]:
         lowered = text.lower()
-        is_patch = any(verb in lowered for verb in self.PATCH_VERBS)
+        has_anchor = any(anchor in lowered for anchor in self.CONTEXT_ANCHORS)
+        structural_ref = bool(re.search(r"(row\s*\d+|column\s*\w+|field\s+\w+|key\s+\w+|\[\d+\]|(?:\$|\.)\w+)", lowered))
+        verb_hit = any(re.search(rf"\b{re.escape(verb)}\b", lowered) for verb in self.PATCH_VERBS)
         treat_pattern = bool(re.search(r"treat\s+.+\s+as\s+.+", lowered))
         update_pattern = bool(re.search(r"re-?output|re-?render", lowered))
-        is_patch = is_patch or treat_pattern or update_pattern
+        set_clause = bool(re.search(r"\bset\s+[\w\.\[\]]+\s+(to|as)\s+", lowered))
+
+        is_patch = (verb_hit or treat_pattern or update_pattern or set_clause) and (has_anchor or structural_ref or set_clause)
         if is_patch:
+            if update_pattern:
+                reason = "rerender_request"
+            elif treat_pattern:
+                reason = "treat_pattern"
+            elif set_clause:
+                reason = "set_clause"
+            else:
+                reason = "verb_with_anchor"
             return PatchInfo(
-                is_patch=True, needs_artifact=True, reason="patch_like_language"
+                is_patch=True, needs_artifact=True, reason=reason
             ).as_dict()
         return PatchInfo().as_dict()

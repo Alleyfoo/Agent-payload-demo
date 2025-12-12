@@ -21,15 +21,14 @@ class CompassionateRegulator:
         if not ranked or len(ranked) < 2:
             return None
 
-        # assume winner set; choose lowest truth/task_fit
+        # assume winner set; choose *worst* agent by highest penalty
         lowest = None
-        lowest_score = 999
+        lowest_score = -1
         for aid, sc in verdict.scores.items():
             score_val = (5 - sc.task_fit) + (5 - sc.truth) + (3 - min(3, sc.clarity))
             if score_val > lowest_score:
-                continue
-            lowest = aid
-            lowest_score = score_val
+                lowest = aid
+                lowest_score = score_val
 
         if not lowest:
             return None

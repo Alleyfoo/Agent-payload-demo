@@ -350,6 +350,18 @@ async def puhemies_chat() -> HTMLResponse:
         </div>
         <div class="controls">
           <div>
+            <label for="inputPath">Lähde-Excel (polku tai valitse tiedosto)</label>
+            <input type="text" id="inputPath" placeholder="C:\\polku\\tiedosto.xlsx" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1f2937;background:#0b1220;color:#e5e7eb;" />
+            <input type="file" id="inputFile" accept=".xls,.xlsx" style="margin-top:6px;" />
+            <small style="color:#94a3b8;">Selain ei näytä täydellistä polkua tietoturvasyistä; voit myös kirjoittaa polun käsin.</small>
+          </div>
+          <div>
+            <label for="outputPath">Tallennuspolku (käsitelty tiedosto)</label>
+            <input type="text" id="outputPath" placeholder="C:\\polku\\tulos.xlsx" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1f2937;background:#0b1220;color:#e5e7eb;" />
+          </div>
+        </div>
+        <div class="controls">
+          <div>
             <label for="taskType">Header task type (optional override)</label>
             <select id="taskType">
               <option value="">Auto (classifier)</option>
@@ -394,8 +406,17 @@ async def puhemies_chat() -> HTMLResponse:
         async function send() {
           const msg = document.getElementById('message').value.trim();
           if (!msg) return;
+          const inputPath = document.getElementById('inputPath').value.trim();
+          const outputPath = document.getElementById('outputPath').value.trim();
+          const fileEl = document.getElementById('inputFile');
+          const fileName = fileEl.files && fileEl.files[0] ? fileEl.files[0].name : null;
           const taskType = document.getElementById('taskType').value;
-          const body = JSON.stringify({ message: msg, task_type: taskType || null });
+          const body = JSON.stringify({
+            message: msg,
+            task_type: taskType || null,
+            input_path: inputPath || fileName || null,
+            output_path: outputPath || null
+          });
           const res = await fetch('/chat/hybrid', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

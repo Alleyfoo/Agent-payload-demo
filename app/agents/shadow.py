@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from statistics import mean
 from typing import Dict, List, Optional
 
-from app.models import ContentPackage, JudgeDecision, Message, MethodPlan, ReviewReport
+from app.models import (
+    CandidateScores,
+    ContentPackage,
+    JudgeDecision,
+    Message,
+    MethodPlan,
+    ReviewReport,
+    Verdict,
+)
 
 
 class ShadowAgent:
@@ -106,6 +115,83 @@ class ShadowAgent:
         self._persist(report)
         self._prune(run_id)
         return report
+
+    def compare_outputs(
+        self,
+        run_id: str,
+        outputs: List[Dict[str, object]],
+        required_grounding: bool = False,
+        contract: Dict[str, object] | None = None,
+        prune: bool = True,
+    ) -> Dict[str, object]:
+        """Compare alternative agent outputs and return a verdict. Also capture trace/graph for monitoring."""
+        scored: List[Dict[str, object]] = []
+        for entry in outputs:
+            text = str(entry.get("text", ""))
+            label = str(entry.get("label", "unknown"))
+            role = str(entry.get("role", "unknown"))
+            score_breakdown = self._score_output(entry, contract)
+            scored.append(
+                {
+                    "label": label,
+                    "role": role,
+                    **score_breakdown,
+                    "text": text,
+                }
+            )
+
+        passing = [s for s in scored if not s.get("gate_violations")]
+        if passing:
+            pool = passing
+            compliant = True
+        else:
+            pool = scored
+            compliant = False
+        scored_sorted = sorted(
+            pool,
+            key=lambda s: (
+                len(s.get("gate_violations", [])),
+                -(s.get("correctness", 0) or 0),
+                -(s.get("truth", 0) or 0),
+                -(s.get("task_fit", 0) or 0),
+            ),
+        )
+        if scored_sorted:
+            winner = scored_sorted[0]["label"]
+            verdict_str = f"{winner} preferred" if compliant else f"{winner} least_bad (noncompliant)"
+        else:
+            winner = "none"
+            verdict_str = "no winner"
+
+        trace = self._build_trace(run_id)
+        graph = self._build_graph(trace)
+
+        report = {
+            "run_id": run_id,
+            "kind": "comparison",
+            "pipeline": ["TaoistIntent", "BuddhistHealing", "SelfishControl"],
+            "verdict": verdict_str,
+            "winner": winner,
+            "ranked": [s["label"] for s in scored_sorted],
+            "scores": {s["label"]: {k: s[k] for k in ("correctness", "truth", "task_fit", "clarity", "tone", "safety", "utility")} for s in scored_sorted},
+            "issues": self._collect_issues(scored_sorted, required_grounding),
+            "required_grounding": required_grounding,
+            "confidence": 0.8,
+            "gate_violations": {s["label"]: s.get("gate_violations", []) for s in scored if s.get("gate_violations")},
+            "trace": trace,
+            "graph": graph,
+            "notes": [m.payload for m in self.messages if m.run_id == run_id],
+        }
+        report["alternatives"] = scored_sorted
+
+        self.history.append(report)
+        self._persist(report)
+        if prune:
+            self._prune(run_id)
+        return report
+
+    def prune_run(self, run_id: str) -> None:
+        self._prune(run_id)
 
     def _persist(self, report: Dict[str, object]) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,6 +360,386 @@ class ShadowAgent:
 
         self.history = combined_history
         return aggregates
+
+    def _score_output(self, entry: Dict[str, object], contract: Dict[str, object] | None = None) -> Dict[str, object]:
+        """Rubric-based score for healing vs selfish."""
+        text = str(entry.get("text", ""))
+        header = entry.get("header", {}) if isinstance(entry.get("header", {}), dict) else {}
+        required_grounding = bool(header.get("required_grounding", False))
+        role = str(entry.get("role", "")).lower()
+
+        truth = 4
+        if required_grounding:
+            if self._looks_invented_weather(text):
+                truth = 0
+            elif self._admits_limitation(text):
+                truth = 4
+            else:
+                truth = 2
+
+        lower = text.lower()
+        off_topic = "joke" in lower or "vitsi" in lower
+
+        task_fit = 5 if text else 1
+        if off_topic and not header.get("task_type") == "joke":
+            task_fit = min(task_fit, 1)
+
+        clarity = min(4, text.count("\n") + 1) if text else 1
+        if task_fit == 1:
+            clarity = min(clarity, 2)
+
+        tone = 3 if "please" in lower or "autan" in lower else 1
+        if "jääkaapin" in lower or "ei kannata" in lower:
+            tone = min(tone, 2)
+
+        safety = "pass"
+        utility = max(1, task_fit)
+        correctness = 5 if task_fit >= 3 else 2
+        gate_violations: List[str] = []
+        if contract:
+            hard_gates = contract.get("hard_gates", [])
+            deliverables = contract.get("deliverables", [])
+            expected_result = contract.get("expected_result")
+            patch_requires_artifact = bool(contract.get("patch_requires_artifact"))
+            patch_requires_render = bool(contract.get("patch_requires_render"))
+            pipeline_required = bool(contract.get("pipeline_required"))
+            crypto_sanity_required = bool(contract.get("crypto_sanity_required"))
+            math_list_required = bool(contract.get("math_list_required"))
+            extraction_required = bool(contract.get("extraction_required"))
+            expected_mean = contract.get("math_expected_mean")
+            expected_median = contract.get("math_expected_median")
+            tip_domain_required = contract.get("tip_domain_required")
+            strict_numeric_truth = bool(contract.get("strict_numeric_truth"))
+            expected_schema = contract.get("expected_schema")
+            # Gate: final numeric result
+            if "must_include_final_result" in hard_gates:
+                final_num = self._extract_final_number(text)
+                if final_num is None:
+                    gate_violations.append("missing_numeric_result")
+                    correctness = 0
+                elif expected_result is not None and final_num != expected_result:
+                    gate_violations.append("wrong_numeric_result")
+                    correctness = 0
+                elif strict_numeric_truth and expected_result is not None and final_num != expected_result:
+                    gate_violations.append("wrong_numeric_result")
+                    correctness = 0
+            # Gate: tips count
+            tips_needed = None
+            for d in deliverables:
+                if isinstance(d, dict) and d.get("type") == "advice" and d.get("count"):
+                    tips_needed = d.get("count")
+            if tips_needed:
+                tips_count = self._count_tips(text)
+                if tips_count < tips_needed:
+                    gate_violations.append("insufficient_advice_items")
+                    correctness = 0
+            # Gate: must_not_contradict_own_math
+            if "must_not_contradict_own_math" in hard_gates and expected_result is not None:
+                if self._detect_contradiction(text, expected_result):
+                    gate_violations.append("self_contradiction")
+                    correctness = 0
+            if patch_requires_artifact:
+                if not self._mentions_artifact_request(text):
+                    gate_violations.append("missing_patch_target_or_request")
+                    correctness = 0
+            if patch_requires_render:
+                if not self._contains_json(text):
+                    gate_violations.append("missing_patch_render")
+                    correctness = 0
+            if pipeline_required and "must_include_pipeline_elements" in hard_gates:
+                pipeline_obj = self._extract_pipeline_json(text)
+                if not pipeline_obj:
+                    gate_violations.append("missing_structured_output")
+                    correctness = 0
+                else:
+                    if self._missing_pipeline_keys(pipeline_obj):
+                        gate_violations.append("missing_pipeline_keys")
+                        correctness = 0
+                    if not self._contains_pipeline_elements(text, pipeline_obj):
+                        gate_violations.append("missing_pipeline_elements")
+                        correctness = 0
+            if crypto_sanity_required and "must_fix_reversible_hash" in hard_gates:
+                if self._mentions_reversible_hash_without_fix(text):
+                    gate_violations.append("crypto_hash_not_fixed")
+                    correctness = 0
+            if math_list_required and "must_handle_math_list" in hard_gates:
+                if not self._passes_math_list(text, expected_mean, expected_median):
+                    gate_violations.append("math_list_incorrect")
+                    correctness = 0
+            if extraction_required and "must_return_structured_json" in hard_gates:
+                parsed = self._extract_json(text)
+                if not parsed:
+                    gate_violations.append("missing_structured_output")
+                    correctness = 0
+                else:
+                    schema_ok, schema_issue = self._check_schema(parsed, expected_schema)
+                    if not schema_ok:
+                        gate_violations.append(schema_issue or "schema_mismatch")
+                        correctness = 0
+                    type_ok, type_issue = self._check_length_types(parsed)
+                    if not type_ok:
+                        gate_violations.append(type_issue or "length_type_invalid")
+                        correctness = 0
+                    token_ok, token_issue = self._check_token_mapping(parsed)
+                    if not token_ok:
+                        gate_violations.append(token_issue or "token_misclassified")
+                        correctness = 0
+            if tip_domain_required:
+                if not self._tips_in_domain(text, tip_domain_required):
+                    gate_violations.append("tips_off_domain")
+                    correctness = 0
+
+        return {
+            "truth": truth,
+            "task_fit": task_fit,
+            "clarity": clarity,
+            "tone": tone,
+            "safety": safety,
+            "utility": utility,
+            "off_topic": off_topic,
+            "correctness": correctness,
+            "gate_violations": gate_violations,
+        }
+
+    def _extract_pipeline_json(self, text: str) -> Optional[Dict[str, object]]:
+        """Parse pipeline JSON, optionally wrapped with BEGIN/END markers."""
+        cleaned = text.strip()
+        if cleaned.startswith("BEGIN_PIPELINE_JSON"):
+            inner = cleaned.split("BEGIN_PIPELINE_JSON", 1)[1]
+            if "END_PIPELINE_JSON" in inner:
+                cleaned = inner.split("END_PIPELINE_JSON", 1)[0].strip()
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+        # code fences
+        blocks = re.findall(r"```json(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+        for blk in blocks:
+            try:
+                return json.loads(blk.strip())
+            except Exception:
+                continue
+        # brace-delimited object
+        obj_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if obj_match:
+            try:
+                return json.loads(obj_match.group(0))
+            except Exception:
+                return None
+        return None
+
+    def _missing_pipeline_keys(self, pipeline_obj: Dict[str, object]) -> List[str]:
+        required_keys = ["pipeline_steps", "data_flow", "failure_recovery", "artifacts", "assumptions"]
+        missing = [k for k in required_keys if k not in pipeline_obj]
+        return missing
+
+    def _contains_pipeline_elements(self, text: str, pipeline_obj: Optional[Dict[str, object]] = None) -> bool:
+        required_elements = [
+            "ingestion",
+            "file_manifest",
+            "classification",
+            "extraction_text",
+            "extraction_tables",
+            "ocr_branch",
+            "validation",
+            "xlsx_writer",
+            "audit_log",
+            "checkpointing_resume",
+            "error_policy",
+        ]
+        synonyms = {
+            "ingestion": ["ingestion", "input"],
+            "file_manifest": ["file_manifest", "manifest"],
+            "classification": ["classification", "classify"],
+            "extraction_text": ["extraction_text", "text_extraction"],
+            "extraction_tables": ["extraction_tables", "table_extraction", "tables"],
+            "ocr_branch": ["ocr_branch", "ocr"],
+            "validation": ["validation", "validate"],
+            "xlsx_writer": ["xlsx_writer", "xlsx", "excel"],
+            "audit_log": ["audit_log", "audit", "log"],
+            "checkpointing_resume": ["checkpointing_resume", "resume", "checkpoint"],
+            "error_policy": ["error_policy", "error", "quarantine"],
+        }
+
+        def has_element(name: str, candidates: List[str]) -> bool:
+            targets = [t.lower() for t in synonyms.get(name, [name])]
+            return any(any(t in c for t in targets) for c in candidates)
+
+        candidates: List[str] = []
+        if pipeline_obj and isinstance(pipeline_obj.get("pipeline_steps"), list):
+            for item in pipeline_obj["pipeline_steps"]:
+                if isinstance(item, str):
+                    candidates.append(item.lower())
+                elif isinstance(item, dict):
+                    for val in item.values():
+                        if isinstance(val, str):
+                            candidates.append(val.lower())
+        if not candidates:
+            candidates = [text.lower()]
+
+        missing = [name for name in required_elements if not has_element(name, candidates)]
+        return len(missing) == 0
+
+    def _mentions_reversible_hash_without_fix(self, text: str) -> bool:
+        lower = text.lower()
+        mentions_bad = "hash" in lower and "reversible" in lower
+        references_fix = any(token in lower for token in ["token", "tokenization", "encrypt", "encryption", "vault"])
+        return mentions_bad and not references_fix
+
+    def _passes_math_list(self, text: str, expected_mean: float | None, expected_median: float | None) -> bool:
+        """Light check: ensure reported mean/median match expected when provided."""
+        lower = text.lower()
+        if expected_mean is None and expected_median is None:
+            return True
+        def _num_in_text(target: float) -> bool:
+            return f"{target}" in text or f"{round(target, 2)}" in text or f"{round(target, 1)}" in text
+
+        mean_ok = True
+        median_ok = True
+        if expected_mean is not None and ("mean" in lower or "average" in lower):
+            mean_ok = _num_in_text(expected_mean)
+        if expected_median is not None and "median" in lower:
+            median_ok = _num_in_text(expected_median)
+        return mean_ok and median_ok
+
+    def _tips_in_domain(self, text: str, domain: str) -> bool:
+        if domain != "mental_multiplication":
+            return True
+        lower = text.lower()
+        # require mentions of multiply/multiplication/mental math in tips
+        return any(k in lower for k in ["multiply", "multiplication", "mental math", "mentally", "product"])
+
+    def _extract_json(self, text: str):
+        cleaned = text.strip()
+        if cleaned.startswith("BEGIN_PIPELINE_JSON"):
+            inner = cleaned.split("BEGIN_PIPELINE_JSON", 1)[1]
+            if "END_PIPELINE_JSON" in inner:
+                cleaned = inner.split("END_PIPELINE_JSON", 1)[0].strip()
+        for candidate in (cleaned,):
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+        try:
+            blocks = re.findall(r"```json(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+            if not blocks:
+                blocks = re.findall(r"\{(?:.|\n)*\}", text) or re.findall(r"\[(?:.|\n)*\]", text)
+            for blk in blocks:
+                return json.loads(blk.strip())
+        except Exception:
+            return None
+        return None
+
+    def _check_schema(self, data, expected_schema) -> tuple[bool, str | None]:
+        if not isinstance(data, list) or not data:
+            return False, "schema_mismatch"
+        for row in data:
+            if not isinstance(row, dict):
+                return False, "schema_mismatch"
+            keys = set(row.keys())
+            if expected_schema:
+                if keys != set(expected_schema):
+                    return False, "schema_mismatch"
+        return True, None
+
+    def _check_length_types(self, data) -> tuple[bool, str | None]:
+        for row in data:
+            if "length" not in row:
+                return False, "missing_length_field"
+            val = row.get("length")
+            if val is None:
+                continue
+            if isinstance(val, str):
+                if val.strip() == "":
+                    return False, "length_type_invalid"
+                if val.isdigit():
+                    continue
+                return False, "length_type_invalid"
+            if isinstance(val, (int, float)):
+                continue
+            return False, "length_type_invalid"
+        return True, None
+
+    def _check_token_mapping(self, data) -> tuple[bool, str | None]:
+        for row in data:
+            material = str(row.get("material", "") or "").lower()
+            coating = str(row.get("coating", "") or "").lower()
+            # misclassified coating tokens in material
+            if any(tok in material for tok in ["zp", "zn", "zinc"]):
+                return False, "coating_misclassified"
+            if any(tok in coating for tok in ["a2", "a4", "stainless"]):
+                return False, "material_misclassified"
+        return True, None
+
+    def _extract_final_number(self, text: str) -> int | None:
+        match = re.search(r"(answer|result|=)\s*[:=]?\s*(-?\d+)", text, re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(2))
+            except ValueError:
+                return None
+        # fallback: last integer in text
+        nums = re.findall(r"-?\d+", text)
+        if nums:
+            try:
+                return int(nums[-1])
+            except ValueError:
+                return None
+        return None
+
+    def _count_tips(self, text: str) -> int:
+        bullet_lines = re.findall(r"(?m)^\s*[-*•]\s+", text)
+        numbered_lines = re.findall(r"(?m)^\s*\d+[\.\)]\s+", text)
+        tip_tokens = re.findall(r"(?i)(^|\n)\s*(tip|advice|one way|one idea)", text)
+        return len(bullet_lines) + len(numbered_lines) + len(tip_tokens)
+
+    def _detect_contradiction(self, text: str, expected: int) -> bool:
+        final_num = self._extract_final_number(text)
+        if final_num is not None and final_num != expected:
+            return True
+        return False
+
+    def _mentions_artifact_request(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(token in lowered for token in ["paste", "provide", "send the data", "previous output", "earlier output", "artifact", "table", "json"])
+
+    def _contains_json(self, text: str) -> bool:
+        return bool(re.search(r"\{|\[", text))
+
+    def _collect_issues(self, scored_sorted: List[Dict[str, object]], required_grounding: bool) -> Dict[str, List[str]]:
+        issues: Dict[str, List[str]] = {}
+        for s in scored_sorted:
+            agent_issues: List[str] = []
+            if required_grounding and s.get("truth", 0) == 0:
+                agent_issues.append("invented facts")
+            if s.get("task_fit", 0) <= 2:
+                agent_issues.append("task avoidance")
+            if s.get("tone", 0) <= 1:
+                agent_issues.append("tone too harsh")
+            if s.get("clarity", 0) <= 2:
+                agent_issues.append("too vague")
+            if s.get("utility", 0) <= 2:
+                agent_issues.append("low_utility")
+            if s.get("off_topic"):
+                agent_issues.append("off_topic")
+            if s.get("correctness", 0) == 0:
+                agent_issues.append("gate_violation")
+            if s.get("gate_violations"):
+                agent_issues.extend(list(s.get("gate_violations")))
+            if agent_issues:
+                issues[s.get("label", "unknown")] = agent_issues
+        return issues
+
+    def _looks_invented_weather(self, text: str) -> bool:
+        lowered = text.lower()
+        mentions_temp = "°c" in lowered or "astetta" in lowered or "celsius" in lowered
+        mentions_now = "nyt" in lowered or "currently" in lowered
+        admits = self._admits_limitation(text)
+        return mentions_temp and mentions_now and not admits
+
+    def _admits_limitation(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(phrase in lowered for phrase in ["en näe", "en voi hakea", "cannot fetch", "ei pääsyä"])
 
     def _build_trace(self, run_id: str) -> List[Dict[str, object]]:
         trace: List[Dict[str, object]] = []

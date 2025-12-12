@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from typing import Literal
+import uuid
 
 
 @dataclass
@@ -249,4 +251,41 @@ class EvaluationContract:
     strict_numeric_truth: bool = False
     tip_domain_required: Optional[str] = None
     expected_schema: Optional[List[str]] = None
-    expected_schema: Optional[List[str]] = None
+
+
+@dataclass
+class ToolLimits:
+    timeout_seconds: int = 15
+    max_memory_mb: int = 256
+    allow_imports: List[str] = field(default_factory=lambda: ["pandas", "numpy", "math", "re", "json", "datetime", "csv"])
+    allow_files: bool = True
+    network_enabled: bool = False
+
+
+@dataclass
+class ToolStep:
+    step_id: str
+    kind: Literal["python", "sql"]
+    payload: str
+    inputs: Dict[str, Any] = field(default_factory=dict)
+    expected_output: Optional[List[str]] = None  # expected columns/keys
+    output_artifact_key: str = "output"
+
+
+@dataclass
+class ToolPlan:
+    plan_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    steps: List[ToolStep] = field(default_factory=list)
+    limits: ToolLimits = field(default_factory=ToolLimits)
+
+
+@dataclass
+class ToolResult:
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    artifacts: Dict[str, Any] = field(default_factory=dict)
+    schema_ok: bool = True
+    schema_errors: List[str] = field(default_factory=list)
+    new_keys: List[str] = field(default_factory=list)

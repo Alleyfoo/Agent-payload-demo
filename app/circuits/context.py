@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import uuid
+import copy
 from typing import Any, Dict, Optional
 
 
@@ -24,11 +26,11 @@ class ContextStateCircuit:
         self.state.active_artifact = artifact
         self.state.artifact_type = artifact_type
         self.state.schema = schema
-        self.state.artifact_id = str(datetime.utcnow().timestamp())
+        self.state.artifact_id = str(uuid.uuid4())
         self.state.timestamp = datetime.utcnow().isoformat()
 
     def has_artifact(self) -> bool:
         return self.state.active_artifact is not None
 
     def get_state(self) -> ContextState:
-        return self.state
+        return copy.deepcopy(self.state)

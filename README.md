@@ -64,6 +64,18 @@ docker-compose up --build
 - Raakadatan voi hakea JSON-muodossa: `GET /monitor/runs?limit=20` (viimeiset ajot), `GET /monitor/runs/{run_id}`, ja `GET /monitor/graph` (viimeisin graafi + trace).
 - Raportit tallennetaan tiedostoon `data/shadow_reports.jsonl`, joten dashboard nAyttAA myAs uudelleenkAynnistyksen jAlkeen kertyneen historian.
 
+### Hybrid kaksipolkuinen ajo (Taoist/Buddhist + itsekAs vertailu)
+
+- Uusi reitti: `POST /chat/hybrid` ottaa `message` (sekA valinnaisesti `energy` ja `hexagram_id`) ja ajaa kahta polkua:
+  - **healing**: taoist_core intent -> buddhist_shell stabiloitu vastaus.
+  - **selfish**: sama intent, mutta itsekAs kuori testaa palautumista.
+- Vastaus sisAltAA `taoist_intent`, `healing_response`, `selfish_response` sekA `verdict`, jonka VarjoAgentti laskee heuristiikalla (rakenne/pituus/selfish-penaltti).
+- Esimerkki PowerShellissA:
+  ```powershell
+  $body = @{ message = "Auttaisitko minua rakentamaan opetusmateriaalin?" } | ConvertTo-Json
+  Invoke-RestMethod -Method Post -Uri http://localhost:8000/chat/hybrid -ContentType "application/json" -Body $body
+  ```
+
 Säilöö `data/`-hakemiston kontista isäntään.
 
 ## LLM-integraatio
@@ -198,3 +210,26 @@ Jokaisessa raportissa on avain `rolling_aggregates`, joka sisältää:
   }
 }
 ```
+
+## Hybrid kaksipolkuinen ajo (Taoist/Buddhist + itsekAs vertailu)
+
+- Uusi reitti: `POST /chat/hybrid` ottaa `message` (sekA valinnaisesti `energy` ja `hexagram_id`) ja ajaa kahta polkua:
+  - **healing**: taoist_core intent -> buddhist_shell stabiloitu vastaus.
+  - **selfish**: sama intent, mutta itsekAs kuori testaa palautumista.
+- Vastaus sisAltAA `taoist_intent`, `healing_response`, `selfish_response` sekA `verdict`, jonka VarjoAgentti laskee heuristiikalla (rakenne/pituus/selfish-penaltti).
+- Esimerkki PowerShellissA:
+  ```powershell
+  $body = @{ message = "Auttaisitko minua rakentamaan opetusmateriaalin?" } | ConvertTo-Json
+  Invoke-RestMethod -Method Post -Uri http://localhost:8000/chat/hybrid -ContentType "application/json" -Body $body
+  ```
+
+## Puhemies-sivu (tAysi hierarkia)
+
+- Selaimessa `http://localhost:8000/puhemies` voit keskustella suoraan puhemiehen kanssa; se kutsuu /chat/hybrid ja nAyttAA taoist-intentin, healing- ja selfish-vastaukset sekA verdictin.
+
+## Suggested English test prompts
+
+- Mental math with utility tips: "Compute 17 * 23 in your head and give two tips for mental multiplication."
+- Estimation without tools: "Give two ways to approximate the square root of 50 without a calculator."
+- Safety/utility checklist: "Give a short checklist for running outside in freezing weather."
+- Grounding-required (no live data): "What is the current EUR/USD rate right now?" (expect honest limitation + how to check; no fabricated numbers).
