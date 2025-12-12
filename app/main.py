@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agents.shadow import ShadowAgent
+from app.models import EnergyVector
 from app.speaker import SpeakerAgent
 from app.utils.llm_client import LLMClient
 
@@ -27,6 +28,33 @@ class ChatResponse(BaseModel):
     shadow_report_path: str
 
 
+class EnergyInput(BaseModel):
+    tension: float | None = None
+    entropy: float | None = None
+    polarity: float | None = None
+    coherence: float | None = None
+
+
+class HybridChatRequest(BaseModel):
+    message: str
+    energy: EnergyInput | None = None
+    hexagram_id: int | None = None
+    task_type: str | None = None
+
+
+class HybridChatResponse(BaseModel):
+    run_id: str
+    header: dict
+    taoist_intent: str
+    grounding: dict
+    healing_response: str
+    selfish_response: str
+    verdict: str
+    alternatives: list | None = None
+    regulation: dict | None = None
+    shadow_report_path: str
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     global speaker, shadow_agent
@@ -42,6 +70,29 @@ async def chat(request: ChatRequest) -> ChatResponse:
     result = speaker.process_and_summarize(request.message)
     response = result["response"]
     return ChatResponse(**response)
+
+
+@app.post("/chat/hybrid", response_model=HybridChatResponse)
+async def chat_hybrid(request: HybridChatRequest) -> HybridChatResponse:
+    if not speaker:
+        raise HTTPException(status_code=500, detail="SpeakerAgent not initialized")
+
+    energy = None
+    if request.energy:
+        energy = EnergyVector(
+            tension=request.energy.tension or 0.5,
+            entropy=request.energy.entropy or 0.5,
+            polarity=request.energy.polarity or 0.0,
+            coherence=request.energy.coherence or 0.5,
+        )
+
+    result = speaker.process_hierarchical(
+        request.message,
+        energy=energy,
+        hexagram_id=request.hexagram_id,
+        task_type=request.task_type,
+    )
+    return HybridChatResponse(**result)
 
 
 @app.get("/monitor/runs")
@@ -70,10 +121,16 @@ async def monitor_graph(limit: int = 1) -> dict:
     latest = history[-1] if history else None
     graph = latest.get("graph", {"nodes": [], "edges": []}) if latest else {"nodes": [], "edges": []}
     trace = latest.get("trace", []) if latest else []
+    scores = latest.get("scores", {}) if latest else {}
+    issues = latest.get("issues", {}) if latest else {}
+    gate_violations = latest.get("gate_violations", {}) if latest else {}
     return {
         "latest_run_id": latest.get("run_id") if latest else None,
         "graph": graph,
         "trace": trace,
+        "scores": scores,
+        "issues": issues,
+        "gate_violations": gate_violations,
     }
 
 
@@ -132,6 +189,10 @@ async def monitor_dashboard() -> HTMLResponse:
             <tbody></tbody>
           </table>
         </section>
+        <section class="card">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Scores & Issues</div>
+          <pre id="scores">—</pre>
+        </section>
       </main>
       <script>
         async function loadGraph() {
@@ -140,6 +201,7 @@ async def monitor_dashboard() -> HTMLResponse:
           document.getElementById('runId').textContent = data.latest_run_id || '—';
           renderGraph(data.graph || {nodes: [], edges: []});
           renderTrace(data.trace || []);
+          renderScores(data);
         }
 
         function renderTrace(trace) {
@@ -156,6 +218,15 @@ async def monitor_dashboard() -> HTMLResponse:
             row.appendChild(route); row.appendChild(role); row.appendChild(ts);
             tbody.appendChild(row);
           });
+        }
+
+        function renderScores(data) {
+          const payload = {
+            scores: data.scores || {},
+            issues: data.issues || {},
+            gate_violations: data.gate_violations || {},
+          };
+          document.getElementById('scores').textContent = JSON.stringify(payload, null, 2);
         }
 
         function renderGraph(graph) {
@@ -240,6 +311,112 @@ async def monitor_dashboard() -> HTMLResponse:
 
         document.getElementById('refresh').addEventListener('click', loadGraph);
         loadGraph();
+      </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.get("/puhemies", response_class=HTMLResponse)
+async def puhemies_chat() -> HTMLResponse:
+    html = """
+    <!DOCTYPE html>
+    <html lang="fi">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Puhemies Chat (Full Hierarchy)</title>
+      <style>
+        body { font-family: "Segoe UI", sans-serif; margin: 0; background: #0f1729; color: #e5e7eb; }
+        main { max-width: 880px; margin: 24px auto; padding: 20px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; }
+        h1 { margin-top: 0; }
+        label { display: block; margin-bottom: 4px; color: #94a3b8; }
+        textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; color: #e5e7eb; }
+        select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; color: #e5e7eb; }
+        button { background: #6cf3c5; color: #0b0f18; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+        .panel { margin-top: 16px; padding: 12px; border-radius: 10px; border: 1px solid #1f2937; background: #0b1220; }
+        .label { color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+        pre { white-space: pre-wrap; }
+        .controls { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+        .controls > div { flex: 1; min-width: 240px; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <h1>Puhemies Chat (taoist -> healing + selfish)</h1>
+        <div>
+          <label for="message">Viesti</label>
+          <textarea id="message" rows="3" placeholder="Kysy jotain puhemiehelta..."></textarea>
+        </div>
+        <div class="controls">
+          <div>
+            <label for="taskType">Header task type (optional override)</label>
+            <select id="taskType">
+              <option value="">Auto (classifier)</option>
+              <option value="general_help">general_help</option>
+              <option value="weather_lookup">weather_lookup</option>
+              <option value="debugging">debugging</option>
+              <option value="data_extraction">data_extraction</option>
+              <option value="data_pipeline_design">data_pipeline_design</option>
+              <option value="policy_update">policy_update</option>
+              <option value="math">math</option>
+            </select>
+          </div>
+          <button id="send">Laheta</button>
+        </div>
+
+        <div class="panel">
+          <div class="label">Header</div>
+          <pre id="header">-</pre>
+        </div>
+        <div class="panel">
+          <div class="label">Taoist intent</div>
+          <pre id="intent">-</pre>
+        </div>
+        <div class="panel">
+          <div class="label">Healing response</div>
+          <pre id="healing">-</pre>
+        </div>
+        <div class="panel">
+          <div class="label">Selfish response (kontrolli)</div>
+          <pre id="selfish">-</pre>
+        </div>
+        <div class="panel">
+          <div class="label">Verdict</div>
+          <pre id="verdict">-</pre>
+        </div>
+        <div class="panel">
+          <div class="label">Regulation</div>
+          <pre id="regulation">-</pre>
+        </div>
+      </main>
+      <script>
+        async function send() {
+          const msg = document.getElementById('message').value.trim();
+          if (!msg) return;
+          const taskType = document.getElementById('taskType').value;
+          const body = JSON.stringify({ message: msg, task_type: taskType || null });
+          const res = await fetch('/chat/hybrid', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body
+          });
+          if (!res.ok) {
+            alert('Error: ' + res.status);
+            return;
+          }
+          const data = await res.json();
+          document.getElementById('header').textContent = JSON.stringify(data.header || {}, null, 2);
+          document.getElementById('intent').textContent = data.taoist_intent || '-';
+          document.getElementById('healing').textContent = data.healing_response || '-';
+          document.getElementById('selfish').textContent = data.selfish_response || '-';
+          document.getElementById('verdict').textContent = data.verdict || '-';
+          document.getElementById('regulation').textContent = data.regulation ? JSON.stringify(data.regulation, null, 2) : '-';
+        }
+        document.getElementById('send').addEventListener('click', send);
+        document.getElementById('message').addEventListener('keydown', (e) => {
+          if (e.ctrlKey && e.key === 'Enter') send();
+        });
       </script>
     </body>
     </html>
