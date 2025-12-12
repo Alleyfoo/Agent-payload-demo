@@ -1,0 +1,237 @@
+tests:
+  # ======================
+  # A. DETERMINISTIC LOGIC
+  # ======================
+
+  - id: A1
+    category: deterministic
+    prompt: "Take this list of numbers: 12, 5, 5, 19, 7. Remove duplicates, sort ascending, and return the median and mean."
+    twist: "Now ignore the 19 because it was an outlier mistake. Recompute."
+    deliverables:
+      - type: result
+        description: "Provide the computed answer (median + mean)."
+      - type: revision
+        description: "Apply change only to the specified number (remove 19)."
+    gates:
+      - "Must include final numeric mean and median."
+      - "Must not invent new numbers."
+      - "Revision must only reflect removing 19."
+
+  - id: A2
+    category: deterministic
+    prompt: "Compute 17 * 23 in your head and give two tips for mental multiplication."
+    twist: "Actually, use 17 * 29 instead and keep the two tips."
+    deliverables:
+      - type: result
+        description: "Provide the product."
+      - type: advice
+        count: 2
+        description: "Two concrete mental-math tips."
+    gates:
+      - "Must include a numeric product."
+      - "Must include 2 distinct tips."
+      - "Revision must only change the product operands."
+
+  - id: A3
+    category: deterministic
+    prompt: "Given numbers: 3, 3, 6, 9, 12. Compute sum and standard deviation (population)."
+    twist: "Using the SAME list, remove exactly one of the duplicated 3s (so the list becomes 3,6,9,12) and recompute sum and standard deviation (population)."
+    deliverables:
+      - type: result
+        description: "Provide sum and standard deviation for original and revised list."
+    gates:
+      - "Must explicitly show both lists (original and revised) as comma-separated numbers."
+      - "Must compute sum and population standard deviation for both."
+      - "Must not treat inputs as digits of a single number (no '33', '333', etc)."
+      - "Must not introduce any numbers not in the lists."
+
+  # ======================
+  # B. SCHEMA & EXTRACTION
+  # ======================
+
+  - id: B1
+    category: schema
+    prompt: |
+      Here are 8 product lines. Extract: standard, size, length, material, coating.
+      Output JSON array.
+      DIN931 M6x30 8.8 ZP
+      DIN 125-A M8 A2
+      ISO 4762 M5x16 Zn
+      DIN933 M10x50 A4
+      DIN 7985 M4x12 ZP
+      DIN 603 M8x40 4.6
+      DIN934 M6 Zn
+      DIN125-A M10 A2
+    twist: "Treat 'ZP' as coating='zinc plated' and 'A2' as material='stainless A2'. Update and re-output."
+    deliverables:
+      - type: json
+        description: "JSON array with fields: standard, size, length, material, coating."
+    gates:
+      - "All 8 lines present."
+      - "Exact field set per item."
+      - "Mapping applied (ZP=zinc plated, A2=stainless A2)."
+      - "Length must be integer or null."
+
+  - id: B2
+    category: schema
+    prompt: |
+      Normalize these fasteners to JSON (standard, size, length, material, coating):
+      DIN912 M4x20 A4
+      ISO 4032 M6 Zn
+      DIN 7991 M8x25 A2
+      DIN 7985 M3x10 ZP
+    twist: "Add rule: 'A4' => material='stainless A4'; 'Zn' => coating='zinc plated'. Re-output."
+    deliverables:
+      - type: json
+        description: "JSON array with fields."
+    gates:
+      - "All items present."
+      - "Mapping applied for A4 and Zn."
+      - "Washers/nuts must have null length."
+
+  - id: B3
+    category: schema
+    prompt: |
+      Extract JSON with fields: standard, size, length, material, coating.
+      DIN931 M10x100 HDG
+      DIN934 M12
+      ISO 4762 M6x16 12.9
+    twist: "Rule: 'HDG' => coating='hot dip galvanized'; '12.9' is a strength class, not coating."
+    deliverables:
+      - type: json
+    gates:
+      - "Strength class must not appear as coating."
+      - "Nut must have null length."
+      - "HDG mapped to hot dip galvanized."
+
+  - id: B4
+    category: schema
+    prompt: |
+      Parse these lines to JSON (standard, size, length, material, coating):
+      DIN933 M8x30
+      DIN933 M8x30
+      DIN933 M8x30 ZP
+    twist: "Deduplicate identical items, but keep variants with different coating. Output JSON only."
+    deliverables:
+      - type: json
+    gates:
+      - "Output must be valid JSON only (no prose, no markdown fences)."
+      - "Exactly 2 items in output."
+      - "Each object must contain exactly these keys: standard, size, length, material, coating."
+      - "Two items must differ by coating (null vs ZP or mapped coating)."
+      - "Do not change standard/size/length across the two items."
+
+  - id: B5
+    category: schema
+    prompt: |
+      Normalize to JSON (standard, size, length, material, coating):
+      ISO 4032 M6 Zn
+      DIN934 M6 Zn
+    twist: "Rule: 'Zn' means coating='zinc plated' (material stays null unless stainless class A2/A4 is present). Re-output JSON only."
+    deliverables:
+      - type: json
+    gates:
+      - "Output must be valid JSON only."
+      - "coating must be 'zinc plated' for both items."
+      - "material must be null for both items."
+      - "length must be null for nuts."
+
+  # ======================
+  # C. PLANNING / PIPELINES
+  # ======================
+
+  - id: C1
+    category: planning
+    prompt: "Design a pipeline to merge two CSVs with slightly different column names, deduplicate by email, and produce an audit log. No code, just steps."
+    twist: "Add GDPR: hash emails and keep a reversible mapping only in a secure vault."
+    deliverables:
+      - type: steps
+        description: "Ordered steps with checkpoints."
+    gates:
+      - "Must include dedupe-by-email strategy."
+      - "Must include audit log."
+      - "Twist must add hashing + secure vault."
+
+  - id: C2
+    category: planning
+    prompt: "Plan a data pipeline to ingest CSV of customers, standardize phone numbers, and handle missing city values."
+    twist: "New requirement: add rollback on validation failure and emit a QA report."
+    deliverables:
+      - type: steps
+    gates:
+      - "Must address phone standardization."
+      - "Must address missing cities."
+      - "Must add rollback + QA report."
+
+  - id: C3
+    category: planning
+    prompt: "Design a product data cleanup flow for ERP import."
+    twist: "Add rule: unknown materials must be flagged, not guessed."
+    deliverables:
+      - type: steps
+    gates:
+      - "Must explicitly avoid guessing."
+      - "Must include flagging mechanism."
+
+  # ======================
+  # D. RECOVERY & ERRORS
+  # ======================
+
+  - id: D1
+    category: recovery
+    prompt: "I ran this and got KeyError: 'email'. Diagnose and propose fix."
+    twist: "Headers are actually: user_email, name, created_at."
+    deliverables:
+      - type: diagnosis
+      - type: fix
+    gates:
+      - "Must use provided headers."
+      - "Must not invent column names."
+
+  - id: D2
+    category: recovery
+    prompt: "Aggregation failed: ValueError: could not convert string to float: 'N/A' during mean()."
+    twist: "Column is 'score', contains 'N/A' and blanks; we must preserve row count."
+    deliverables:
+      - type: diagnosis
+      - type: fix
+    gates:
+      - "Must mention coercion or masking."
+      - "Must preserve row count."
+
+  - id: D3
+    category: recovery
+    prompt: "JSON validation failed: unexpected field 'grade'."
+    twist: "Schema only allows: standard, size, length, material, coating."
+    deliverables:
+      - type: diagnosis
+      - type: fix
+    gates:
+      - "Must remove or remap extra field."
+      - "Must not expand schema."
+
+  # ======================
+  # E. REVISION DISCIPLINE
+  # ======================
+
+  - id: E1
+    category: revision
+    prompt: |
+      Output JSON:
+      [{"a":1,"b":2},{"a":3,"b":4}]
+    twist: "Change only the value of b in the second object to 5."
+    deliverables:
+      - type: json
+    gates:
+      - "Only one value changed."
+      - "No reformatting or reordering."
+
+  - id: E2
+    category: revision
+    prompt: "Compute total price: items=[10,20,30], tax=10%."
+    twist: "Tax is actually 24%. Recompute total only."
+    deliverables:
+      - type: result
+    gates:
+      - "Items must remain unchanged."
+      - "Only tax calculation updated."
