@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 from typing import Any, Dict, List, Optional
 from typing import Literal
 import uuid
@@ -68,6 +69,7 @@ class CircuitResult:
     review: ReviewReport
     decision: JudgeDecision
     shadow_report: Dict[str, Any]
+    force_guidance: Dict[str, Any] | None = None
 
 
 @dataclass
@@ -78,6 +80,58 @@ class UserResponse:
     content: Dict[str, Any]
     shadow_report_path: Optional[str]
     revision_summary: Dict[str, Any] = field(default_factory=dict)
+
+
+# Force Guidance structures
+@dataclass
+class ForceProfile:
+    tension: float = 0.4
+    uncertainty: float = 0.45
+    inertia: float = 0.45
+    polarity: float = 0.0
+    agency: float = 0.6
+
+    def as_dict(self) -> Dict[str, float]:
+        return {
+            "tension": self.tension,
+            "uncertainty": self.uncertainty,
+            "inertia": self.inertia,
+            "polarity": self.polarity,
+            "agency": self.agency,
+        }
+
+
+@dataclass
+class ForceLever:
+    name: str
+    rationale: str
+    first_step: str
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "rationale": self.rationale, "first_step": self.first_step}
+
+
+@dataclass
+class ForceGuidance:
+    situation_summary: str
+    primary_lever: ForceLever
+    adjacent_options: List[ForceLever]
+    profile: ForceProfile
+    reason_codes: List[str]
+    state_pattern: str
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "situation_summary": self.situation_summary,
+            "primary_lever": self.primary_lever.as_dict(),
+            "adjacent_options": [opt.as_dict() for opt in self.adjacent_options],
+            "profile": self.profile.as_dict(),
+            "reason_codes": list(self.reason_codes),
+            "state_pattern": self.state_pattern,
+        }
+
+    def as_json(self) -> str:
+        return json.dumps(self.as_dict(), ensure_ascii=False, separators=(",", ":"))
 
 
 @dataclass
@@ -246,11 +300,13 @@ class EvaluationContract:
     crypto_sanity_required: bool = False
     math_list_required: bool = False
     extraction_required: bool = False
+    force_guidance_required: bool = False
     math_expected_mean: Optional[float] = None
     math_expected_median: Optional[float] = None
     strict_numeric_truth: bool = False
     tip_domain_required: Optional[str] = None
     expected_schema: Optional[List[str]] = None
+    force_guidance_schema: Optional[List[str]] = None
 
 
 @dataclass

@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import asdict
 from typing import Dict, List, Any
 
+
 from app.agents.shadow import ShadowAgent
 from app.breathing import default_params
 from app.checkup_layer import build_evaluation_contract
@@ -25,9 +26,12 @@ from app.circuits.hybrid import (
     TaoistIntentCircuit,
 )
 from app.circuits.intent import IntentContextCircuit
+from app.circuits.force_guidance import ForceGuidanceCircuit
 from app.circuits.method import MethodProducerCircuit
 from app.circuits.review import ReviewJudgeCircuit
 from app.circuits.patch_resolver import PatchResolverCircuit
+from app.data_pipe.conversation_orchestrator import DataPipeConversationOrchestrator
+from app.data_pipe.data_session_store import DataPipeSessionStore
 from app.models import (
     BuddhistResponse,
     CandidateOutput,
@@ -42,6 +46,7 @@ from app.models import (
     TaoistIntent,
     UserResponse,
     Verdict,
+    ForceProfile,
     ToolPlan,
     ToolStep,
     ToolLimits,
@@ -67,6 +72,7 @@ class SpeakerAgent:
         self.selfish_circuit = SelfishBuddhistCircuit(llm)
         self.healing_composer = HealingComposer(llm)
         self.selfish_composer = SelfishComposer(llm)
+        self.force_guidance_circuit = ForceGuidanceCircuit()
         self.classifier = PuhemiesClassifier()
         self.grounding = GroundingCircuit()
         self.context_state = ContextStateCircuit()
@@ -83,6 +89,10 @@ class SpeakerAgent:
         except ValueError:
             configured_revisions = 2
         self.max_revisions = max(0, configured_revisions)
+        allow_root_env = os.getenv("DATA_PIPE_ALLOW_ROOT")
+        allow_root_path = Path(allow_root_env) if allow_root_env else None
+        self.data_pipe_store = DataPipeSessionStore()
+        self.data_pipe_orchestrator = DataPipeConversationOrchestrator(self.data_pipe_store, allow_root=allow_root_path)
 
     def new_run_id(self) -> str:
         return str(uuid.uuid4())
@@ -118,6 +128,24 @@ class SpeakerAgent:
     def _set_artifact_state(self, artifact: Any, artifact_type: str | None = None, schema: Dict[str, Any] | None = None) -> None:
         with self._ctx_lock:
             self.context_state.set_artifact(artifact, artifact_type=artifact_type, schema=schema)
+
+    def _energy_to_force_profile(self, energy: EnergyVector) -> ForceProfile:
+        polarity = max(0.0, min(1.0, (energy.polarity + 1) / 2))
+        inertia = max(0.0, min(1.0, 1 - energy.coherence))
+        return ForceProfile(
+            tension=energy.tension,
+            uncertainty=energy.entropy,
+            inertia=inertia,
+            polarity=polarity,
+            agency=max(0.0, min(1.0, 1 - energy.entropy)),
+        )
+
+    def _with_response_aliases(self, payload: Dict[str, object]) -> Dict[str, object]:
+        if "healing_response" in payload and "compassionate_response" not in payload:
+            payload["compassionate_response"] = payload["healing_response"]
+        if "selfish_response" in payload and "directive_response" not in payload:
+            payload["directive_response"] = payload["selfish_response"]
+        return payload
 
     def _params_snapshot(self) -> Dict[str, Any]:
         with self._params_lock:
@@ -204,6 +232,11 @@ with open("preview.json","w") as f:
                 "required_grounding": False,
                 "notes": "Return concrete pipeline steps, data flow, recovery, and artifacts.",
             },
+            "agentic": {
+                "user_intent": "Coordinate multiple agents",
+                "required_grounding": False,
+                "notes": "Agentic orchestration: let assistant route to supporting agents.",
+            },
             "debugging": {
                 "user_intent": "Debugging request",
                 "required_grounding": False,
@@ -228,6 +261,11 @@ with open("preview.json","w") as f:
                 "user_intent": "General request",
                 "required_grounding": False,
                 "notes": "",
+            },
+            "data_pipe": {
+                "user_intent": "Structured Excel data pipeline",
+                "required_grounding": False,
+                "notes": "Guide through headers, transform, save.",
             },
         }
 
@@ -362,16 +400,39 @@ with open("preview.json","w") as f:
                             row[key] = None
         return rows
 
-    def _validate_schema(self, data: Any, expected_keys: List[str] | None = None) -> bool:
-        if not isinstance(data, list) or not data:
+    def _validate_schema(self, artifact: Any, expected_keys: List[str]) -> bool:
+        if not isinstance(artifact, list):
             return False
-        for row in data:
+        allowed = set(expected_keys)
+        for row in artifact:
             if not isinstance(row, dict):
                 return False
-            if expected_keys and set(row.keys()) != set(expected_keys):
+            extra = set(row.keys()) - allowed
+            # reject if unexpected keys appear
+            if extra:
                 return False
         return True
 
+    def _extract_first_json_object(self, text: str) -> Dict[str, object]:
+        try:
+            first_brace = text.index("{")
+            snippet = text[first_brace:]
+            depth = 0
+            collected = ""
+            for ch in snippet:
+                if ch == "{":
+                    depth += 1
+                if ch == "}":
+                    depth -= 1
+                collected += ch
+                if depth == 0:
+                    break
+            return json.loads(collected)
+        except Exception:
+            return {}
+
+    def _handle_data_pipe(self, run_id: str, user_message: str) -> Dict[str, object]:
+        return self.data_pipe_orchestrator.handle(run_id, user_message)
     # Original single-path pipeline (Intent -> Method -> Review)
     def process(self, user_message: str) -> CircuitResult:
         run_id = self.new_run_id()
@@ -385,6 +446,9 @@ with open("preview.json","w") as f:
                 payload={"message": user_message},
             )
         )
+
+        fg_result = self.force_guidance_circuit.run(run_id, user_message)
+        self._record(fg_result.message)
 
         intent_result = self.intent_circuit.run(run_id, user_message)
         intent_message = intent_result["message"]
@@ -449,6 +513,7 @@ with open("preview.json","w") as f:
             content_package,  # type: ignore[arg-type]
             revision_history,
             decision,
+            force_guidance=fg_result.guidance.as_dict(),
         )
 
         return CircuitResult(
@@ -458,6 +523,7 @@ with open("preview.json","w") as f:
             review=review,  # type: ignore[arg-type]
             decision=decision,  # type: ignore[arg-type]
             shadow_report=shadow_report,
+            force_guidance=fg_result.guidance.as_dict(),
         )
 
     def build_user_response(self, result: CircuitResult) -> UserResponse:
@@ -498,11 +564,15 @@ with open("preview.json","w") as f:
         user_message: str,
         energy: EnergyVector | None = None,
         hexagram_id: int | None = None,
+        task_type: str | None = None,
     ) -> Dict[str, object]:
         run_id = self.new_run_id()
         energy_vec = energy or EnergyVector.infer(user_message)
         hexagram = HexagramState(hexagram_id, name="unspecified" if hexagram_id else "neutral")
         params_snapshot = self._params_snapshot()
+        force_profile = self._energy_to_force_profile(energy_vec)
+        fg_result = self.force_guidance_circuit.run(run_id, user_message, override_profile=force_profile)
+        self._record(fg_result.message)
 
         self._record(
             Message(
@@ -524,6 +594,8 @@ with open("preview.json","w") as f:
 
         healing_result = self.buddhist_circuit.run(run_id, user_message, taoist_intent, energy_vec, hexagram)
         healing_response: BuddhistResponse = healing_result.response
+        if "Ensisijainen" not in healing_response.content:
+            healing_response.content = f"Ensisijainen: {healing_response.content}"
         healing_response.content = self._firewall(healing_response.content)
         self._record(healing_result.message)
 
@@ -551,19 +623,21 @@ with open("preview.json","w") as f:
                     "healing": healing_response.content,
                     "selfish": selfish_response.content,
                     "verdict": comparison.get("verdict"),
+                    "force_guidance": fg_result.guidance.as_dict(),
                 },
             )
         )
 
-        return {
+        return self._with_response_aliases({
             "run_id": run_id,
             "taoist_intent": taoist_intent.intent,
             "healing_response": healing_response.content,
             "selfish_response": selfish_response.content,
             "verdict": comparison.get("verdict"),
             "comparison": comparison,
+            "force_guidance": fg_result.guidance.as_dict(),
             "shadow_report_path": str(self.shadow.storage_path),
-        }
+        })
 
     # Full hierarchical chain per spec: Puhemies -> Taoist -> Grounding -> Healing/Selfish -> Judge
     def process_hierarchical(
@@ -573,12 +647,65 @@ with open("preview.json","w") as f:
         hexagram_id: int | None = None,
         task_type: str | None = None,
     ) -> Dict[str, object]:
-        run_id = self.new_run_id()
+        lower_message = user_message.lower()
+        run_id_override = None
+        if (task_type and task_type == "data_pipe") or "data pipe" in lower_message:
+            payload = self._extract_first_json_object(user_message)
+            if isinstance(payload, dict):
+                rid = payload.get("run_id")
+                if isinstance(rid, str) and rid.strip():
+                    run_id_override = rid.strip()
+        run_id = run_id_override or self.new_run_id()
         energy_vec = energy or EnergyVector.infer(user_message)
         hexagram = HexagramState(hexagram_id, name="unspecified" if hexagram_id else "neutral")
         params_snapshot = self._params_snapshot()
         patch_info = self.patch_detector.detect(user_message)
         tool_override = self._tool_override(user_message)
+        force_profile = self._energy_to_force_profile(energy_vec)
+        fg_result = self.force_guidance_circuit.run(run_id, user_message, override_profile=force_profile)
+        self._record(fg_result.message)
+        force_guidance_requested = (task_type and task_type == "force_guidance") or "force guidance" in lower_message
+        has_key_list = any(k in lower_message for k in ["situation_summary", "primary_lever", "adjacent_options", "profile", "reason_codes", "state_pattern"])
+        if force_guidance_requested and has_key_list:
+            self._record(
+                Message(
+                    run_id=run_id,
+                    sender="User",
+                    recipient="PuhemiesAgentti",
+                    role="instruction",
+                    payload={"message": user_message, "header": {"task_type": task_type or "force_guidance"}},
+                )
+            )
+            self._record(fg_result.message)
+            report = {"run_id": run_id, "kind": "force_guidance", "force_guidance": fg_result.guidance.as_dict()}
+            self.shadow._persist(report)  # type: ignore[attr-defined]
+            self.shadow.history.append(report)
+            return fg_result.guidance.as_json()
+
+        # Data pipe workflow
+        if (task_type and task_type == "data_pipe") or "data pipe" in lower_message:
+            data_pipe_result = self._handle_data_pipe(run_id, user_message)
+            self._record(
+                Message(
+                    run_id=run_id,
+                    sender="PuhemiesAgentti",
+                    recipient="User",
+                    role="data_pipe",
+                    payload=data_pipe_result,
+                )
+            )
+            return self._with_response_aliases(
+                {
+                    "run_id": run_id,
+                    "content": data_pipe_result.get("content", ""),
+                    "state": data_pipe_result.get("state", {}),
+                    "header_plan": data_pipe_result.get("header_plan"),
+                    "transform_plan": data_pipe_result.get("transform_plan"),
+                    "preview_report": data_pipe_result.get("preview_report"),
+                    "output_path": data_pipe_result.get("output_path"),
+                    "shadow_report_path": str(self.shadow.storage_path),
+                }
+            )
 
         # Fast-path: deterministic patching on existing artifact (skip LLMs)
         if patch_info.get("is_patch") and self._has_artifact():
@@ -636,7 +763,7 @@ with open("preview.json","w") as f:
                         )
                     )
                     self.shadow.prune_run(run_id)
-                    return {
+                    return self._with_response_aliases({
                         "run_id": run_id,
                         "header": header.__dict__,
                         "taoist_intent": "skipped (patch fast-path)",
@@ -649,7 +776,9 @@ with open("preview.json","w") as f:
                         "alternatives": None,
                         "regulation": {"fast_path": "patch", "schema_ok": schema_ok},
                         "shadow_report_path": str(self.shadow.storage_path),
-                    }
+                        "content": rendered,
+                        "state": {"phase": "PATCH_APPLIED", "run_id": run_id},
+                    })
                 rendered = self._firewall(patch_result.rendered)
                 rendered += "\n\nSchema warning: patched artifact rejected due to schema mismatch."
                 self._record(
@@ -662,7 +791,7 @@ with open("preview.json","w") as f:
                     )
                 )
                 self.shadow.prune_run(run_id)
-                return {
+                return self._with_response_aliases({
                     "run_id": run_id,
                     "header": header.__dict__,
                     "taoist_intent": "skipped (patch fast-path)",
@@ -675,7 +804,9 @@ with open("preview.json","w") as f:
                     "alternatives": None,
                     "regulation": {"fast_path": "patch", "schema_ok": False, "new_keys": new_keys},
                     "shadow_report_path": str(self.shadow.storage_path),
-                }
+                    "content": rendered,
+                    "state": {"phase": "PATCH_REJECTED", "run_id": run_id},
+                })
             else:
                 self._record(
                     Message(
@@ -760,6 +891,8 @@ with open("preview.json","w") as f:
                         "tool_metrics": tool_result.metrics,
                         "schema_ok": tool_result.schema_ok,
                         "shadow_report_path": str(self.shadow.storage_path),
+                        "content": "tool_executed",
+                        "state": {"phase": "TOOLS", "run_id": run_id},
                     }
             else:
                 tool_result_payload = {"reason": tool_reason or "no_artifact_for_tool"}
@@ -895,6 +1028,8 @@ with open("preview.json","w") as f:
             "strict_numeric_truth": contract_obj.strict_numeric_truth,
             "tip_domain_required": contract_obj.tip_domain_required,
             "expected_schema": contract_obj.expected_schema,
+            "force_guidance_required": contract_obj.force_guidance_required,
+            "force_guidance_schema": contract_obj.force_guidance_schema,
         }
 
         # Step 6: Shadow judge (verdict)
@@ -1032,7 +1167,7 @@ with open("preview.json","w") as f:
             )
         )
 
-        return {
+        return self._with_response_aliases({
             "run_id": run_id,
             "header": header.__dict__,
             "taoist_intent": taoist_intent.intent,
@@ -1043,4 +1178,6 @@ with open("preview.json","w") as f:
             "alternatives": comparison.get("alternatives"),
             "regulation": regulation_info or (regulation.__dict__ if regulation else {}),
             "shadow_report_path": str(self.shadow.storage_path),
-        }
+            "content": healing_response.content,
+            "state": {"phase": "DEFAULT", "run_id": run_id},
+        })

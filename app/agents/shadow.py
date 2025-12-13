@@ -17,8 +17,12 @@ from app.models import (
 )
 
 
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_STORAGE = ROOT_DIR / "data" / "shadow_reports.jsonl"
+
+
 class ShadowAgent:
-    def __init__(self, storage_path: Path = Path("data/shadow_reports.jsonl")) -> None:
+    def __init__(self, storage_path: Path = DEFAULT_STORAGE) -> None:
         self.storage_path = storage_path
         self.messages: List[Message] = []
         self.history = self._load_history()
@@ -34,6 +38,7 @@ class ShadowAgent:
         content_package: ContentPackage,
         revision_history: List[Dict[str, object]],
         decision: Optional[JudgeDecision],
+        force_guidance: Dict[str, object] | None = None,
     ) -> Dict[str, object]:
         coverage_gap = 1 - review.section_coverage
         format_violations = len(review.missing_sections)
@@ -106,6 +111,7 @@ class ShadowAgent:
             "trace": trace,
             "graph": graph,
             "notes": [m.payload for m in self.messages if m.run_id == run_id],
+            "force_guidance": force_guidance,
         }
 
         aggregates = self._update_aggregates(report)
@@ -406,11 +412,68 @@ class ShadowAgent:
             crypto_sanity_required = bool(contract.get("crypto_sanity_required"))
             math_list_required = bool(contract.get("math_list_required"))
             extraction_required = bool(contract.get("extraction_required"))
+            force_guidance_required = bool(contract.get("force_guidance_required"))
             expected_mean = contract.get("math_expected_mean")
             expected_median = contract.get("math_expected_median")
             tip_domain_required = contract.get("tip_domain_required")
             strict_numeric_truth = bool(contract.get("strict_numeric_truth"))
             expected_schema = contract.get("expected_schema")
+            fg_schema = contract.get("force_guidance_schema") or [
+                "situation_summary",
+                "primary_lever",
+                "adjacent_options",
+                "profile",
+                "reason_codes",
+                "state_pattern",
+            ]
+            parsed_json = None
+            if extraction_required:
+                parsed_json = self._extract_json(text)
+                if parsed_json is not None:
+                    text = json.dumps(parsed_json, ensure_ascii=False)
+            if force_guidance_required and "must_return_force_guidance_json" in hard_gates:
+                parsed_json = self._extract_json(text)
+                if parsed_json is not None and isinstance(parsed_json, (dict, list)):
+                    text = json.dumps(parsed_json, ensure_ascii=False, separators=(",", ":"))
+                if not parsed_json or not isinstance(parsed_json, dict):
+                    gate_violations.append("force_guidance_invalid_json")
+                    correctness = 0
+                else:
+                    keys = set(parsed_json.keys())
+                    if set(fg_schema) != keys:
+                        gate_violations.append("force_guidance_schema_mismatch")
+                        correctness = 0
+                    else:
+                        if not isinstance(parsed_json.get("primary_lever"), dict):
+                            gate_violations.append("force_guidance_primary_invalid")
+                            correctness = 0
+                        else:
+                            lever = parsed_json["primary_lever"]
+                            for req in ["name", "rationale", "first_step"]:
+                                if req not in lever:
+                                    gate_violations.append("force_guidance_primary_invalid")
+                                    correctness = 0
+                                    break
+                        adj = parsed_json.get("adjacent_options")
+                        if not isinstance(adj, list) or len(adj) != 3:
+                            gate_violations.append("force_guidance_adjacent_invalid")
+                            correctness = 0
+                        else:
+                            for item in adj:
+                                if not isinstance(item, dict) or "name" not in item or "first_step" not in item:
+                                    gate_violations.append("force_guidance_adjacent_invalid")
+                                    correctness = 0
+                                    break
+                        profile = parsed_json.get("profile")
+                        if not isinstance(profile, dict) or not all(k in profile for k in ["tension", "uncertainty", "inertia", "polarity", "agency"]):
+                            gate_violations.append("force_guidance_profile_invalid")
+                            correctness = 0
+                        if not isinstance(parsed_json.get("reason_codes"), list):
+                            gate_violations.append("force_guidance_reason_codes_invalid")
+                            correctness = 0
+                        if not isinstance(parsed_json.get("state_pattern"), str):
+                            gate_violations.append("force_guidance_state_pattern_invalid")
+                            correctness = 0
             # Gate: final numeric result
             if "must_include_final_result" in hard_gates:
                 final_num = self._extract_final_number(text)
@@ -467,22 +530,27 @@ class ShadowAgent:
                     gate_violations.append("math_list_incorrect")
                     correctness = 0
             if extraction_required and "must_return_structured_json" in hard_gates:
-                parsed = self._extract_json(text)
+                parsed = parsed_json if parsed_json is not None else self._extract_json(text)
                 if not parsed:
                     gate_violations.append("missing_structured_output")
                     correctness = 0
                 else:
-                    schema_ok, schema_issue = self._check_schema(parsed, expected_schema)
-                    if not schema_ok:
-                        gate_violations.append(schema_issue or "schema_mismatch")
-                        correctness = 0
-                    type_ok, type_issue = self._check_length_types(parsed)
-                    if not type_ok:
-                        gate_violations.append(type_issue or "length_type_invalid")
-                        correctness = 0
-                    token_ok, token_issue = self._check_token_mapping(parsed)
-                    if not token_ok:
-                        gate_violations.append(token_issue or "token_misclassified")
+                    if expected_schema and isinstance(parsed, list):
+                        schema_ok, schema_issue = self._check_schema(parsed, expected_schema)
+                        if not schema_ok:
+                            gate_violations.append(schema_issue or "schema_mismatch")
+                            correctness = 0
+                        else:
+                            type_ok, type_issue = self._check_length_types(parsed)
+                            if not type_ok:
+                                gate_violations.append(type_issue or "length_type_invalid")
+                                correctness = 0
+                            token_ok, token_issue = self._check_token_mapping(parsed)
+                            if not token_ok:
+                                gate_violations.append(token_issue or "token_misclassified")
+                                correctness = 0
+                    elif expected_schema:
+                        gate_violations.append("schema_mismatch")
                         correctness = 0
             if tip_domain_required:
                 if not self._tips_in_domain(text, tip_domain_required):
@@ -661,7 +729,11 @@ class ShadowAgent:
         return True, None
 
     def _check_token_mapping(self, data) -> tuple[bool, str | None]:
+        if not isinstance(data, list):
+            return False, "schema_mismatch"
         for row in data:
+            if not isinstance(row, dict):
+                return False, "schema_mismatch"
             material = str(row.get("material", "") or "").lower()
             coating = str(row.get("coating", "") or "").lower()
             # misclassified coating tokens in material

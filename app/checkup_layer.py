@@ -66,6 +66,13 @@ def _parse_number_list(user_message: str) -> List[int]:
     return [int(n) for n in nums] if nums else []
 
 
+def _is_force_guidance_task(user_message: str) -> bool:
+    text = user_message.lower()
+    has_trigger = "force guidance" in text
+    key_markers = any(k in text for k in ["situation_summary", "primary_lever", "adjacent_options", "profile", "reason_codes", "state_pattern"])
+    return has_trigger and key_markers
+
+
 def _is_math_list_task(user_message: str) -> bool:
     text = user_message.lower()
     has_keywords = any(k in text for k in ["median", "mean", "average", "sort", "remove duplicates"])
@@ -75,7 +82,13 @@ def _is_math_list_task(user_message: str) -> bool:
 
 def _is_extraction_task(user_message: str) -> bool:
     text = user_message.lower()
-    return any(k in text for k in ["split", "extract", "normalize", "mapping", "schema", "json", "fields", "parts", "columns", "token"])
+    verbs = ["split", "extract", "parse", "normalize", "tokenize", "map", "mapping"]
+    structure = ["rows", "row", "columns", "column", "fields", "parts", "table", "schema"]
+    if any(tok in text for tok in verbs):
+        return True
+    if any(tok in text for tok in structure) and any(tok in text for tok in ["table", "rows", "columns", "schema"]):
+        return True
+    return False
 
 
 def _is_reoutput_request(user_message: str) -> bool:
@@ -98,7 +111,8 @@ def build_evaluation_contract(
     pipeline_gate = _looks_like_pipeline_request(user_message)
     crypto_gate = _mentions_reversible_hash(user_message)
     math_list_gate = _is_math_list_task(user_message)
-    extraction_gate = _is_extraction_task(user_message) or _is_reoutput_request(user_message)
+    force_guidance_gate = _is_force_guidance_task(user_message)
+    extraction_gate = (not force_guidance_gate) and (_is_extraction_task(user_message) or _is_reoutput_request(user_message))
     numbers = _parse_number_list(user_message)
     math_expected_mean = None
     math_expected_median = None
@@ -128,6 +142,8 @@ def build_evaluation_contract(
         hard_gates.append("must_handle_math_list")
     if extraction_gate:
         hard_gates.append("must_return_structured_json")
+    if force_guidance_gate:
+        hard_gates.append("must_return_force_guidance_json")
 
     rubric = {
         "correctness": 0.5 if truth_critical == "high" else 0.3,
@@ -156,9 +172,20 @@ def build_evaluation_contract(
         crypto_sanity_required=crypto_gate,
         math_list_required=math_list_gate,
         extraction_required=extraction_gate,
+        force_guidance_required=force_guidance_gate,
         math_expected_mean=math_expected_mean,
         math_expected_median=math_expected_median,
         strict_numeric_truth=bool(target_expr),
         tip_domain_required=tip_domain,
         expected_schema=expected_schema,
+        force_guidance_schema=[
+            "situation_summary",
+            "primary_lever",
+            "adjacent_options",
+            "profile",
+            "reason_codes",
+            "state_pattern",
+        ]
+        if force_guidance_gate
+        else None,
     )
