@@ -10,8 +10,17 @@ silently read or write the wrong thing.
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+
+# Ensure the package parent (repo root) is on sys.path so the absolute import
+# below resolves whether this module is run as a script, imported as a top-level
+# module, or imported as part of the agent_network_demo package.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from agent_network_demo.artifact_store import ArtifactStore
 

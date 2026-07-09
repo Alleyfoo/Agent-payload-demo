@@ -14,8 +14,19 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+# Ensure the package parent (repo root) is on sys.path so the absolute imports
+# below resolve whether this module is run as a script (e.g. as the Streamlit
+# entrypoint), imported as a top-level module, or imported as part of the
+# agent_network_demo package. On Streamlit Cloud only the script's own
+# directory is placed on sys.path, so without this `agent_network_demo` is not
+# importable.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from agent_network_demo.agents import (
     IntakeAgent,
