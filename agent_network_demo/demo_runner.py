@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .agents import (
+from agent_network_demo.agents import (
     IntakeAgent,
     SchemaAgent,
     TransformAgent,
@@ -27,9 +27,9 @@ from .agents import (
     KEY_SCHEMA,
     KEY_VERDICT,
 )
-from .artifact_store import ArtifactStore
-from .contracts import HandoffEnvelope, ContractError
-from .event_log import Event, EventLog
+from agent_network_demo.artifact_store import ArtifactStore
+from agent_network_demo.contracts import HandoffEnvelope, ContractError
+from agent_network_demo.event_log import Event, EventLog
 
 
 @dataclass

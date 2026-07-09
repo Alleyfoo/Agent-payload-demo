@@ -21,8 +21,8 @@ import json
 import os
 from typing import Any, Dict, List, Tuple
 
-from .artifact_store import ArtifactStore
-from .contracts import (
+from agent_network_demo.artifact_store import ArtifactStore
+from agent_network_demo.contracts import (
     ACTION_READ_ARTIFACT,
     ACTION_WRITE_CLEANED_OUTPUT,
     ACTION_WRITE_SCHEMA_PROFILE,
@@ -34,7 +34,7 @@ from .contracts import (
     ContractError,
     HandoffEnvelope,
 )
-from .event_log import Event, EventLog
+from agent_network_demo.event_log import Event, EventLog
 
 # Canonical artifact keys — used everywhere (fixtures, README, tests).
 KEY_RAW_INPUT = "artifact.raw_input.preview"

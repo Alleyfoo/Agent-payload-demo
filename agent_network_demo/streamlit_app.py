@@ -19,17 +19,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any, Dict
 
 import streamlit as st
 
-# Allow running both as a package and as a script.
-try:
-    from .demo_runner import RunSession, StepSnapshot
-except ImportError:  # pragma: no cover - script-mode fallback
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agent_network_demo.demo_runner import RunSession, StepSnapshot
+# Ensure the repo root is on sys.path so `agent_network_demo` is importable
+# whether this file is run as a script (`streamlit run
+# agent_network_demo/streamlit_app.py`, which puts the *script* dir on the
+# path, not the repo root) or imported as a package. Without this, the
+# package's absolute imports fail on Streamlit Community Cloud.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from agent_network_demo.demo_runner import RunSession, StepSnapshot
 
 DEFAULT_KEY_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "fixtures", "key_file.json"

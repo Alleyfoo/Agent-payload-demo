@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-from .artifact_store import ArtifactStore
+from agent_network_demo.artifact_store import ArtifactStore
 
 # ---------------------------------------------------------------------------
 # Action vocabulary — the closed set of things any agent may do.
