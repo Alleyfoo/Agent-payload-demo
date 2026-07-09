@@ -298,6 +298,71 @@ def render_concrete_data(sess: RunSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Keys-vs-paste comparison box (the 1000-pass test)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _comparison(max_passes: int) -> Dict[str, Any]:
+    from agent_network_demo.key_vs_paste import compare
+    return compare(max_passes=max_passes)
+
+
+def render_comparison() -> None:
+    """A small, deterministic box that showcases *why* passing keys beats
+    pasting content: run the real CSV through 1000 handoffs under both
+    architectures and compare the drift."""
+    m = _comparison(1000)
+    end = m["endpoint"]
+    shipped = m["base_content_bytes"] * m["max_passes"]
+    with st.expander(
+        "🔬 Why keys, not paste: the 1000-pass test", expanded=False,
+    ):
+        st.markdown(
+            '<div class="and-narr">'
+            'Same real CSV, run through <b>1000 agent-to-agent handoffs</b>. '
+            'Passing <b>keys</b> hands references — the content is read from the '
+            'shared store and never re-encoded, so it cannot drift no matter how '
+            'many agents touch it. Pasting the <b>text</b> re-serializes the whole '
+            'table at every boundary; each boundary is a drift opportunity and '
+            'they accumulate. With a <i>perfectly reversible</i> serialization, '
+            'paste also drifts 0 — but only if every one of the 1000 boundaries '
+            'round-trips exactly. One realistic non-reversible boundary (here: a '
+            'CSV emitter that pads string cells and a parser that doesn\'t unpad '
+            'them) and the errors compound with every pass.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "Keys (this demo)", f"{end['keys_errors']:,} errors",
+            delta="0 content bytes shipped", delta_color="off",
+        )
+        c2.metric(
+            "Paste — reversible", f"{end['paste_reversible_errors']:,} errors",
+            delta=f"{shipped:,} content bytes shipped", delta_color="off",
+        )
+        c3.metric(
+            "Paste — lossy interop", f"{end['paste_lossy_errors']:,} errors",
+            delta=f"{shipped:,}+ content bytes shipped", delta_color="off",
+        )
+        try:
+            import pandas as pd
+            df = pd.DataFrame(m["series"]).set_index("passes")[
+                ["keys_errors", "paste_reversible_errors", "paste_lossy_errors"]
+            ]
+            df.columns = ["Keys", "Paste (reversible)", "Paste (lossy)"]
+            st.line_chart(df, width="stretch", height=220)
+        except Exception:  # noqa: BLE001 - chart is decorative
+            pass
+        st.caption(
+            f"Base table {m['base_content_bytes']:,} bytes · {m['row_count']} rows · "
+            f"{m['string_cells']} string cells drift every pass in the lossy case "
+            f"→ {m['string_cells'] * m['max_passes']:,} cumulative error events "
+            f"at {m['max_passes']} passes."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Top bar (run controls)
 # ---------------------------------------------------------------------------
 
@@ -452,6 +517,9 @@ def main() -> None:
 
     # Concrete story (hidable): the real CSV, the real transformation, the real logfile.
     render_concrete_data(sess)
+
+    # Why keys beat paste: the 1000-pass comparison (hidable).
+    render_comparison()
 
     # Verdict banner once the ShadowJudge has acted (also carries the replay hint).
     if sess.done:
