@@ -223,6 +223,25 @@ h1, h2, h3, h4 { font-family: 'Archivo', system-ui, sans-serif; font-weight: 800
                border:1px solid var(--vc,#e2e9f3); background:var(--vb,#fff); }
 .and-verdict h3 { margin:0 0 4px; font-size:1.15rem; }
 .and-verdict .vsub { font-size:.78rem; color:#5b6b7f; }
+.and-verdict .vhint { font-size:.76rem; color:#5b6b7f; margin-top:8px; }
+.and-verdict .vhint b { color:#0f2a4d; }
+
+/* Concrete data panel */
+.and-narr { background:#fff; border:1px solid #e2e9f3; border-left:5px solid #e8732a;
+            border-radius:12px; padding:13px 16px; font-size:.88rem; color:#28344a;
+            line-height:1.55; margin-bottom:12px; }
+.and-narr b { color:#0f2a4d; }
+.and-dtbl { background:#fff; border:1px solid #e2e9f3; border-radius:10px;
+            padding:8px 10px; }
+.and-dtbl .and-dtbl-h { font-weight:800; color:#0f2a4d; font-size:.86rem; }
+.and-dtbl .and-dtbl-s { color:#5b6b7f; font-size:.7rem; margin:3px 0 7px; }
+.and-tbl { border-collapse:collapse; font-size:.78rem; width:100%; }
+.and-tbl th { background:#0f2a4d; color:#fff; font-weight:700; text-align:left;
+              padding:5px 8px; font-size:.66rem; text-transform:uppercase; letter-spacing:.03em; }
+.and-tbl td { padding:4px 8px; border-bottom:1px solid #eef2f7; color:#1f2a44;
+              white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+.and-tbl tr:nth-child(even) td { background:#f8fafc; }
+.and-tbl td.and-coerced { background:#fdeede; color:#b35a00; font-weight:700; }
 </style>
         """,
         unsafe_allow_html=True,
@@ -558,7 +577,50 @@ def verdict_banner(verdict: Dict[str, Any]) -> None:
             h.append(badge(f"{mark} {ck}", col,
                            _tint_for_status("ok" if cv else ("warn" if cv is False else "pending"))))
         h.append('</div>')
+    h.append('<div class="vhint">Run complete — click <b>↺ Reset</b>, then <b>⏭ Step</b> '
+             'to watch it build one agent at a time.</div>')
     h.append('</div>')
+    st.markdown("".join(h), unsafe_allow_html=True)
+
+
+# --- Concrete data panel (the real CSV, the real transformation) -------------
+def narrative_block(source_ref: str) -> None:
+    """The concrete story: a real CSV that stays put while keys travel between
+    agents, a real transformation, and a real logfile."""
+    st.markdown(
+        f'<div class="and-narr">'
+        f'This is a real <b>CSV</b> ({_e(source_ref)}). It is loaded once into the '
+        f'shared artifact store. From then on agents never pass the rows — they '
+        f'pass <b>keys</b> (references) like <span class="and-key">artifact.raw_input</span>. '
+        f'So the file itself never moves between agents; a tiny reference does. '
+        f'<b>TransformAgent</b> still does real work, though: it reads the keyed rows '
+        f'and coerces text columns into typed values — the highlighted cells below. '
+        f'The <b>logfile</b> records every action as it happens.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def data_table(rows: List[Dict[str, Any]], columns: List[str], title: str,
+               subtitle: str = "", coerce_mask: Optional[Dict[Any, bool]] = None) -> None:
+    """Render a small HTML table of real rows. ``coerce_mask`` maps
+    (row_index, column_name) -> True for cells to highlight as coerced."""
+    coerce_mask = coerce_mask or {}
+    h = [f'<div class="and-dtbl"><div class="and-dtbl-h">{_e(title)}</div>']
+    if subtitle:
+        h.append(f'<div class="and-dtbl-s">{_e(subtitle)}</div>')
+    h.append('<div style="overflow-x:auto"><table class="and-tbl"><thead><tr>')
+    for c in columns:
+        h.append(f'<th>{_e(c)}</th>')
+    h.append('</tr></thead><tbody>')
+    for i, row in enumerate(rows):
+        h.append('<tr>')
+        for c in columns:
+            v = row.get(c, "")
+            cls = ' class="and-coerced"' if coerce_mask.get((i, c)) else ""
+            h.append(f'<td{cls} title="{_e(v)}">{_e(v)}</td>')
+        h.append('</tr>')
+    h.append('</tbody></table></div></div>')
     st.markdown("".join(h), unsafe_allow_html=True)
 
 

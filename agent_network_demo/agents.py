@@ -232,6 +232,13 @@ class IntakeAgent(_BaseAgent):
             raise ContractError(
                 f"intake_agent: source payload not found: {source_ref!r}"
             )
+        if source_ref.lower().endswith(".csv"):
+            # A real CSV: every value arrives as a string, so the numeric
+            # columns ("Order ID", "Total") are text here and get coerced by
+            # TransformAgent — that is the visible transformation.
+            import csv
+            with open(source_ref, "r", encoding="utf-8", newline="") as fh:
+                return list(csv.DictReader(fh))
         with open(source_ref, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         rows = data.get("rows", data) if isinstance(data, dict) else data

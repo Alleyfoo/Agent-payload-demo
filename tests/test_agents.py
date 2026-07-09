@@ -21,6 +21,7 @@ from agent_network_demo.contracts import HandoffEnvelope, write_key_for
 from agent_network_demo.event_log import EventLog
 
 FIX_SAMPLE = "agent_network_demo/fixtures/sample_payload.json"
+FIX_CSV = "agent_network_demo/fixtures/sample_payload.csv"
 
 
 def seed_envelope(run_id="run_001", to_agent="intake_agent"):
@@ -184,6 +185,40 @@ def test_validation_warns_on_incomplete_chain(data_dir):
     verdict = store.get(KEY_VERDICT)
     assert verdict["status"] == "warn"
     assert verdict["checks"]["chain_complete"] is False
+    log.close()
+
+
+def test_intake_reads_real_csv_and_transform_coerces(data_dir):
+    """The shipped CSV is the real input: every cell arrives as a string, so
+    the numeric columns are text here and TransformAgent coerces them into
+    typed values. This is the visible transformation the UI shows."""
+    store = ArtifactStore()
+    log = EventLog("run_csv", data_dir=str(data_dir))
+    IntakeAgent(source_ref=FIX_CSV).run(
+        seed_envelope(), _view(store, seed_envelope()), log)
+    raw = store.get(KEY_RAW_INPUT)
+    # CSV values are all strings before coercion.
+    assert raw["rows"] == 20
+    first_raw = raw["preview_rows"][0]
+    assert isinstance(first_raw["Order ID"], str)
+    assert isinstance(first_raw["Total"], str)
+
+    env = HandoffEnvelope(run_id="run_csv", from_agent="intake_agent",
+                          to_agent="schema_agent", handoff_type="schema_request",
+                          input_keys=[KEY_RAW_INPUT],
+                          output_contract="schema_profile.v1")
+    SchemaAgent().run(env, _view(store, env), log)
+    env2 = HandoffEnvelope(run_id="run_csv", from_agent="schema_agent",
+                           to_agent="transform_agent",
+                           handoff_type="transform_request",
+                           input_keys=[KEY_RAW_INPUT, KEY_SCHEMA],
+                           output_contract="cleaned_output.v1")
+    TransformAgent().run(env2, _view(store, env2), log)
+    cleaned = store.get(KEY_CLEANED)
+    assert cleaned["coerced_cells"] > 0
+    first_clean = cleaned["preview_rows"][0]
+    assert isinstance(first_clean["Order ID"], int)
+    assert isinstance(first_clean["Total"], float)
     log.close()
 
 

@@ -235,6 +235,10 @@ class RunSession:
         assert self.log is not None
         return self.log.as_dicts()
 
+    def log_path(self) -> str:
+        """Path to the on-disk JSONL logfile for this run (empty if no run)."""
+        return self.log.path if self.log is not None else ""
+
     def current_envelope(self) -> Dict[str, Any]:
         return self._envelope.to_dict() if self._envelope else {}
 

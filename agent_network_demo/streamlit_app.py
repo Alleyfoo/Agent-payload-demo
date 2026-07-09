@@ -236,6 +236,68 @@ def render_detail(sess: RunSession, sel: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Concrete data panel (the real CSV, the real transformation, the real logfile)
+# ---------------------------------------------------------------------------
+
+def render_concrete_data(sess: RunSession) -> None:
+    """A hidable frame showing the real CSV rows, the real transformation
+    (text → typed, coerced cells highlighted), and the real on-disk logfile."""
+    raw_key = ui.WRITES["intake_agent"]
+    clean_key = ui.WRITES["transform_agent"]
+    if not (sess.store.has(raw_key) and sess.store.has(clean_key)):
+        return  # need both raw + cleaned to tell the transformation story
+    raw = sess.store.get(raw_key)
+    cleaned = sess.store.get(clean_key)
+    cols = cleaned.get("columns") or raw.get("columns") or []
+    raw_rows = raw.get("preview_rows", [])
+    cleaned_rows = cleaned.get("preview_rows", [])
+
+    # A cell was "transformed" iff its value changed between raw and cleaned —
+    # that covers text→number coercion ("42.50"→42.5) and any trimming.
+    coerce_mask: Dict[Any, bool] = {}
+    for i, cr in enumerate(cleaned_rows):
+        rr = raw_rows[i] if i < len(raw_rows) else {}
+        for c in cols:
+            if rr.get(c) != cr.get(c):
+                coerce_mask[(i, c)] = True
+
+    with st.expander(
+        "📄 The real CSV, the real transformation, the real logfile",
+        expanded=True,
+    ):
+        ui.narrative_block(raw.get("source_ref", ""))
+        c1, c2 = st.columns(2)
+        with c1:
+            ui.data_table(
+                raw_rows, cols,
+                "Raw input (as loaded from the CSV)",
+                f"first {len(raw_rows)} of {raw.get('row_count', '?')} rows · "
+                "every value is text",
+            )
+        with c2:
+            ui.data_table(
+                cleaned_rows, cols,
+                "Cleaned output (TransformAgent)",
+                f"{cleaned.get('coerced_cells', 0)} cells coerced · "
+                "highlighted = text → typed",
+                coerce_mask=coerce_mask,
+            )
+        # The real on-disk logfile.
+        path = sess.log_path()
+        log_text = ""
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                log_text = fh.read()
+        st.markdown(
+            f'<div class="and-dtbl" style="margin-top:10px">'
+            f'<div class="and-dtbl-h">Logfile (append-only JSONL)</div>'
+            f'<div class="and-dtbl-s">{path or "—"}</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.code(log_text or "(empty)", language="json")
+
+
+# ---------------------------------------------------------------------------
 # Top bar (run controls)
 # ---------------------------------------------------------------------------
 
@@ -339,9 +401,6 @@ def main() -> None:
 
     sess = get_session()
 
-    if sess and sess.done:
-        st.caption("Run complete — click **↺ Reset**, then **⏭ Step** to watch it build step-by-step.")
-
     # --- main area -------------------------------------------------------
     if sess is None:
         st.info(
@@ -355,41 +414,46 @@ def main() -> None:
 
     ui.spine(spine_states(sess), spine_badges(sess))
 
-    # Main row: relation map | key-handoff strip + detail panel.
-    graph_col, detail_col = st.columns([2.3, 1])
-    with graph_col:
-        ui.map_legend()
-        nodes, edges = build_graph(sess)
-        cfg = Config(
-            width=840, height=480, directed=True, physics=False,
-            hierarchical=True, direction="LR", nodeSpacing=130, levelSeparation=160,
-            nodeHighlightBehavior=True, highlightColor=ui.BLUE,
-        )
-        clicked = agraph(nodes=nodes, edges=edges, config=cfg)
-        if clicked:
-            st.session_state["selected"] = clicked
-    with detail_col:
-        env = sess.current_envelope()
-        ui.key_handoff(env, write_key_for(env.get("output_contract", "")), sess.store)
-        st.markdown("")  # small breath
-        sel = st.session_state.get("selected")
-        render_detail(sess, sel)
+    # Main row — fixed height so clicking nodes / stepping never reflows the
+    # page; only the contents inside this box change.
+    with st.container(height=520):
+        graph_col, detail_col = st.columns([2.3, 1])
+        with graph_col:
+            ui.map_legend()
+            nodes, edges = build_graph(sess)
+            cfg = Config(
+                width=840, height=452, directed=True, physics=False,
+                hierarchical=True, direction="LR", nodeSpacing=130, levelSeparation=160,
+                nodeHighlightBehavior=True, highlightColor=ui.BLUE,
+            )
+            clicked = agraph(nodes=nodes, edges=edges, config=cfg)
+            if clicked:
+                st.session_state["selected"] = clicked
+        with detail_col:
+            env = sess.current_envelope()
+            ui.key_handoff(env, write_key_for(env.get("output_contract", "")), sess.store)
+            st.markdown("")
+            sel = st.session_state.get("selected")
+            render_detail(sess, sel)
 
-    # Bottom row: state registry cards | event log.
-    st.markdown("")  # small gap
-    bl, br = st.columns([1, 1])
-    with bl:
-        ui.section_header("State registry",
-                          "The shared artifact store — content lives here by key, "
-                          "not in the envelopes between agents.")
-        ui.state_cards(sess.state())
-    with br:
-        ui.section_header("Event log",
-                          "Append-only audit trail: every action with its input "
-                          "keys, output keys, status, and checks.")
-        ui.event_rows(sess.events(), scroll=True)
+    # Bottom row — fixed height: state registry cards | event log.
+    with st.container(height=286):
+        bl, br = st.columns([1, 1])
+        with bl:
+            ui.section_header("State registry",
+                              "The shared artifact store — content lives here by key, "
+                              "not in the envelopes between agents.")
+            ui.state_cards(sess.state())
+        with br:
+            ui.section_header("Event log",
+                              "Append-only audit trail: every action with its input "
+                              "keys, output keys, status, and checks.")
+            ui.event_rows(sess.events(), scroll=True)
 
-    # Verdict banner once the ShadowJudge has acted.
+    # Concrete story (hidable): the real CSV, the real transformation, the real logfile.
+    render_concrete_data(sess)
+
+    # Verdict banner once the ShadowJudge has acted (also carries the replay hint).
     if sess.done:
         v = sess.report().get("verdict")
         if v:

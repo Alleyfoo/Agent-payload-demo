@@ -6,5 +6,5 @@
     "write_cleaned_output",
     "write_validation_verdict"
   ],
-  "source_ref": "agent_network_demo/fixtures/sample_payload.json"
+  "source_ref": "agent_network_demo/fixtures/sample_payload.csv"
 }
