@@ -37,6 +37,7 @@ from agent_network_demo.agents import (
     KEY_RAW_INPUT,
     KEY_SCHEMA,
     KEY_VERDICT,
+    confine_path,
 )
 from agent_network_demo.artifact_store import ArtifactStore
 from agent_network_demo.contracts import HandoffEnvelope, ContractError, write_key_for
@@ -82,7 +83,13 @@ class RunSession:
     # -- lifecycle -------------------------------------------------------
     def start_run(self, key_file_path: str = "fixtures/key_file.json") -> str:
         """Create a run id, load the key file, seed store + log, build the
-        ordered agent list, set the seed envelope, and return the run id."""
+        ordered agent list, set the seed envelope, and return the run id.
+
+        ``key_file_path`` is opened directly — the public UI only ever hands
+        the runner a key file chosen from the bundled fixtures, so the path is
+        trusted. The key file's ``source_ref`` (the payload path) is untrusted
+        *data*, so it is confined to the fixtures dir here before any agent
+        opens it: a key file cannot point the demo at an arbitrary file."""
         if not os.path.exists(key_file_path):
             raise FileNotFoundError(f"key file not found: {key_file_path}")
         with open(key_file_path, "r", encoding="utf-8") as fh:
@@ -96,7 +103,11 @@ class RunSession:
         self.store = ArtifactStore()
         self.log = EventLog(self.run_id, data_dir=self.data_dir)
 
-        source_ref = self._key_file.get("source_ref", "fixtures/sample_payload.json")
+        # Confine the payload path to the fixtures dir — defense against a
+        # key file that points outside the demo's data.
+        source_ref = confine_path(
+            self._key_file.get("source_ref", "sample_payload.json")
+        )
         self._agents = [
             IntakeAgent(source_ref=source_ref),
             SchemaAgent(),
@@ -151,7 +162,18 @@ class RunSession:
                 read_keys=list(envelope.input_keys),
                 write_key=write_key_for(envelope.output_contract),
             )
+            # Snapshot the store before the agent runs so we can check, after
+            # it returns, exactly which keys it wrote this step. The scoped
+            # view already blocks any write outside the contracted key; this
+            # outbound check is the second half the runner's docstring promises
+            # ("validates each envelope inbound and outbound") and it also
+            # catches a write that bypasses the view entirely (e.g. a future
+            # agent handed the raw store) — the keys newly in the store must
+            # all match the inbound envelope's declared output_contract.
+            keys_before = set(self.store.keys())
             new_envelope = agent.run(envelope, view, self.log)
+            new_keys = sorted(set(self.store.keys()) - keys_before)
+            envelope.validate_outbound(new_keys)
 
             self._envelope = new_envelope
             self._current += 1

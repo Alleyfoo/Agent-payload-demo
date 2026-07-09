@@ -68,6 +68,19 @@ _CONTRACT_PREFIX: Dict[str, str] = {
     CONTRACT_VALIDATION_VERDICT: "artifact.validation_verdict",
 }
 
+# The write action an envelope MUST be granted for a given output_contract.
+# This is what makes ``allowed_actions`` a real grant instead of descriptive
+# metadata: the contract the agent promises to fulfil must be backed by the
+# matching write permission. ``table_preview.v1`` (the intake/entry agent) is
+# intentionally absent — there is no ``write_table_preview`` action; intake's
+# only declared power is ``read_artifact`` (and it reads the filesystem, not
+# the store), so its envelope requires no write action.
+_REQUIRED_ACTION_FOR_CONTRACT: Dict[str, str] = {
+    CONTRACT_SCHEMA_PROFILE: ACTION_WRITE_SCHEMA_PROFILE,
+    CONTRACT_CLEANED_OUTPUT: ACTION_WRITE_CLEANED_OUTPUT,
+    CONTRACT_VALIDATION_VERDICT: ACTION_WRITE_VALIDATION_VERDICT,
+}
+
 
 def write_key_for(output_contract: str) -> str:
     """The single canonical key an agent with this ``output_contract`` may
@@ -111,9 +124,17 @@ class HandoffEnvelope:
 
     # -- validation ------------------------------------------------------
     def validate_inbound(self, store: ArtifactStore) -> None:
-        """Check that every ``input_key`` exists in the store before the
-        receiving agent runs. Raises :class:`ContractError` if any are
-        missing — an agent must not run against absent inputs."""
+        """Check the inbound envelope before the receiving agent runs:
+
+        - every ``input_key`` exists in the store (an agent must not run
+          against absent inputs);
+        - every ``allowed_action`` is a known action (closed vocabulary);
+        - if ``input_keys`` is non-empty, ``read_artifact`` is granted;
+        - if ``output_contract`` carries a required write action, that action
+          is granted — so ``allowed_actions`` matches the declared contract
+          instead of being decorative.
+
+        Raises :class:`ContractError` on any violation."""
         missing = [k for k in self.input_keys if not store.has(k)]
         if missing:
             raise ContractError(
@@ -123,6 +144,27 @@ class HandoffEnvelope:
         if unknown:
             raise ContractError(
                 f"{self.to_agent}: unknown allowed_actions: {unknown}"
+            )
+        # An envelope that declares ``input_keys`` is promising to read from
+        # the store, so it must be granted ``read_artifact`` — otherwise the
+        # keys are decorative (the scoped view would deny every read anyway,
+        # but the grant should say so up front).
+        if self.input_keys and ACTION_READ_ARTIFACT not in self.allowed_actions:
+            raise ContractError(
+                f"{self.to_agent}: input_keys declared but read_artifact not "
+                f"in allowed_actions {self.allowed_actions}"
+            )
+        # An envelope that declares an ``output_contract`` must be granted the
+        # write action that backs that contract. Without this, ``allowed_actions``
+        # is just a label — the real power flows from the contract key. Tying
+        # the grant to the contract makes the envelope an honest capability
+        # token: the permission and the obligation match.
+        required = _REQUIRED_ACTION_FOR_CONTRACT.get(self.output_contract)
+        if required is not None and required not in self.allowed_actions:
+            raise ContractError(
+                f"{self.to_agent}: output_contract {self.output_contract!r} "
+                f"requires action {required!r} in allowed_actions "
+                f"{self.allowed_actions}"
             )
 
     def validate_outbound(self, output_keys: List[str]) -> None:

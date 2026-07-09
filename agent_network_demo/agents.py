@@ -54,6 +54,36 @@ KEY_SCHEMA = "artifact.schema_profile"
 KEY_CLEANED = "artifact.cleaned_output"
 KEY_VERDICT = "artifact.validation_verdict"
 
+# The only directory payload files may be loaded from. The public demo loads
+# data by *reference* (a path in the key file), so the source_ref coming out of
+# a key file is untrusted data — it must be confined here, or the demo would be
+# saying "look at my safe agent architecture" while a text box whispers "type a
+# server path". The runner confines source_ref to this dir before any agent
+# opens it.
+FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def confine_path(path: str, root: str = FIXTURES_DIR) -> str:
+    """Resolve ``path`` (relative to ``root`` if not absolute) and verify it
+    stays inside ``root``. Returns the resolved absolute path. Raises
+    :class:`ContractError` on any escape — ``..`` traversal, an absolute path
+    outside ``root``, or a path on a different drive.
+
+    A relative ``path`` is interpreted as relative to ``root`` (the fixtures
+    dir), so a key file may say ``"sample_payload.csv"`` rather than spell out
+    the whole tree. An absolute path inside ``root`` (how the test harness
+    points at a fixture) is also accepted.
+    """
+    root_abs = os.path.abspath(root)
+    candidate = path if os.path.isabs(path) else os.path.join(root_abs, path)
+    real = os.path.realpath(candidate)
+    rel = os.path.relpath(real, root_abs)
+    if os.path.isabs(rel) or rel == ".." or rel.startswith(".." + os.sep):
+        raise ContractError(
+            f"source path {path!r} escapes the fixtures dir {root_abs!r}"
+        )
+    return real
+
 
 # ---------------------------------------------------------------------------
 # Deterministic schema inference helpers.

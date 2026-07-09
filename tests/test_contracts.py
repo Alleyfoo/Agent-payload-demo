@@ -6,6 +6,8 @@ import pytest
 
 from agent_network_demo.artifact_store import ArtifactStore
 from agent_network_demo.contracts import (
+    ACTION_READ_ARTIFACT,
+    ACTION_WRITE_SCHEMA_PROFILE,
     ALLOWED_ACTIONS,
     ContractError,
     HandoffEnvelope,
@@ -30,8 +32,51 @@ def test_validate_inbound_requires_input_keys_present():
 def test_validate_inbound_passes_when_keys_present():
     store = ArtifactStore()
     store.register("artifact.x", {"type": "table_preview", "status": "ok"})
-    env = make_env(input_keys=["artifact.x"])
+    env = make_env(input_keys=["artifact.x"], allowed_actions=[ACTION_READ_ARTIFACT])
     env.validate_inbound(store)  # no raise
+
+
+def test_validate_inbound_requires_read_action_when_input_keys_present():
+    store = ArtifactStore()
+    store.register("artifact.x", {"type": "table_preview", "status": "ok"})
+    # input_keys declared, but read_artifact not granted.
+    env = make_env(input_keys=["artifact.x"], allowed_actions=[])
+    with pytest.raises(ContractError, match="read_artifact"):
+        env.validate_inbound(store)
+
+
+def test_validate_inbound_requires_write_action_for_contract():
+    store = ArtifactStore()
+    # schema_profile contract, but write_schema_profile not granted.
+    env = make_env(
+        output_contract="schema_profile.v1",
+        allowed_actions=[ACTION_READ_ARTIFACT],
+    )
+    with pytest.raises(ContractError, match="write_schema_profile"):
+        env.validate_inbound(store)
+
+
+def test_validate_inbound_table_preview_needs_no_write_action():
+    # The intake/entry contract has no required write action — its only power
+    # is read_artifact. So an envelope with table_preview + read_artifact is
+    # valid even though there is no write_table_preview action.
+    store = ArtifactStore()
+    env = make_env(
+        output_contract="table_preview.v1",
+        allowed_actions=[ACTION_READ_ARTIFACT],
+    )
+    env.validate_inbound(store)  # no raise
+
+
+def test_validate_inbound_passes_when_actions_match_contract():
+    store = ArtifactStore()
+    store.register("artifact.x", {"type": "table_preview", "status": "ok"})
+    env = make_env(
+        input_keys=["artifact.x"],
+        output_contract="schema_profile.v1",
+        allowed_actions=[ACTION_READ_ARTIFACT, ACTION_WRITE_SCHEMA_PROFILE],
+    )
+    env.validate_inbound(store)  # no raise — grant matches obligation
 
 
 def test_validate_inbound_rejects_unknown_action():

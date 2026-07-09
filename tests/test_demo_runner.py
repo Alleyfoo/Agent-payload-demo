@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from agent_network_demo.contracts import HandoffEnvelope
 from agent_network_demo.demo_runner import RunSession
 
 
@@ -146,3 +149,68 @@ def test_ungranted_read_is_blocked_by_capability_view(key_file_path, data_dir):
     # The agent did not advance — chain stayed at transform (index 2).
     assert sess._current == 2
     assert sess.chain_status()[2]["state"] == "control"
+
+
+def test_outbound_validation_catches_bypass_write(key_file_path, data_dir):
+    """The runner validates each envelope outbound, not just inbound. The
+    scoped view already blocks ungranted writes; this checks the *runner*
+    catches a write that bypasses the view (here: an agent that reaches the
+    raw store) — the keys newly in the store must match the inbound
+    envelope's output_contract, or the step errors and the chain does not
+    advance."""
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    store = sess.store
+
+    class BypassAgent:
+        name = "intake_agent"
+
+        def run(self, envelope, view, log):
+            # Bypass the scoped view and write straight to the store — a key
+            # the inbound envelope's output_contract (table_preview.v1 ->
+            # artifact.raw_input) does NOT license.
+            store.register(
+                "artifact.evil", {"type": "table_preview", "status": "ok"}
+            )
+            return HandoffEnvelope(
+                run_id=envelope.run_id, from_agent=self.name,
+                to_agent="schema_agent", handoff_type="schema_request",
+                input_keys=["artifact.raw_input"],
+                output_contract="schema_profile.v1",
+                context_summary="bypass", allowed_actions=["read_artifact"],
+            )
+
+    sess._agents[0] = BypassAgent()
+    snap = sess.step()
+    assert snap.status == "error"
+    assert "does not match" in snap.message.lower()
+    # The bypass key landed in the store, but the step is rejected and the
+    # chain does not advance — _current stays at intake (index 0).
+    assert "artifact.evil" in store.keys()
+    assert sess._current == 0
+
+
+def test_outbound_validation_passes_for_correct_write(key_file_path, data_dir):
+    """A normal step writes exactly the contracted key, so the outbound
+    check passes and the chain advances."""
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    snap = sess.step()  # intake writes artifact.raw_input
+    assert snap.status == "ok"
+    assert sess._current == 1
+    assert "artifact.raw_input" in sess.store.keys()
+
+
+def test_source_ref_outside_fixtures_is_rejected(data_dir):
+    """A key file whose source_ref escapes the fixtures dir is refused at
+    start_run — the demo cannot be pointed at an arbitrary file."""
+    kf = data_dir / "key_file.json"
+    kf.write_text(json.dumps({
+        "run_intent": "ingest_orders",
+        "allowed_actions": ["read_artifact"],
+        # Climb out of the fixtures dir to the repo root.
+        "source_ref": "../../README.md",
+    }), encoding="utf-8")
+    sess = RunSession(data_dir=str(data_dir))
+    with pytest.raises(Exception, match="escapes"):
+        sess.start_run(str(kf))

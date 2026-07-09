@@ -27,6 +27,7 @@ inspect it.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -47,6 +48,29 @@ from agent_network_demo.demo_runner import RunSession
 DEFAULT_KEY_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "fixtures", "key_file.json"
 )
+
+
+def list_key_files() -> List[str]:
+    """The key files the demo may run — every JSON file *inside the fixtures
+    dir* that looks like a key file (carries ``source_ref`` +
+    ``allowed_actions``). The UI offers only these, never a free-text path:
+    the public demo must not have a "please type a server path" box next to a
+    page about safe agent payloads. The runner confines the chosen key file's
+    ``source_ref`` to this same dir, so the whole input surface is bounded."""
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+    out: List[str] = []
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "source_ref" in data and "allowed_actions" in data:
+            out.append(path)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +289,19 @@ def render_concrete_data(sess: RunSession) -> None:
         "📄 The real CSV, the real transformation, the real logfile",
         expanded=True,
     ):
-        ui.narrative_block(raw.get("source_ref", ""))
+        # The store holds the confined *absolute* payload path; show a
+        # repo-relative one in the narrative so the story reads cleanly while
+        # still pointing at a real on-disk file.
+        src = raw.get("source_ref", "")
+        display_src = src
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            rel = os.path.relpath(src, repo_root)
+            if not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel)):
+                display_src = rel
+        except ValueError:
+            pass
+        ui.narrative_block(display_src)
         c1, c2 = st.columns(2)
         with c1:
             ui.data_table(
@@ -367,10 +403,10 @@ def render_comparison() -> None:
 # ---------------------------------------------------------------------------
 
 def render_top_bar(sess: Optional[RunSession]) -> None:
-    """One row: run id · Start · Step · Reset · key file · verdict chip.
+    """One row: run id · Start · Step · Reset · Replay · key file · verdict chip.
     Returns nothing — button clicks are handled here with st.rerun()."""
-    c_id, c_start, c_step, c_reset, c_kf, c_verd = st.columns(
-        [1.0, 0.75, 0.75, 0.75, 1.7, 0.9])
+    c_id, c_start, c_step, c_reset, c_replay, c_kf, c_verd = st.columns(
+        [1.0, 0.75, 0.75, 0.75, 0.85, 1.6, 0.9])
 
     with c_id:
         if sess and sess.run_id:
@@ -390,9 +426,17 @@ def render_top_bar(sess: Optional[RunSession]) -> None:
         step_clicked = st.button("⏭ Step", use_container_width=True)
     with c_reset:
         reset_clicked = st.button("↺ Reset", use_container_width=True)
+    with c_replay:
+        replay_clicked = st.button("↻ Replay", use_container_width=True)
     with c_kf:
-        key_file = st.text_input("Key file", value=DEFAULT_KEY_FILE,
-                                 label_visibility="collapsed")
+        # A fixed list of bundled key files, never a free-text path — the
+        # demo's only input surface is a closed menu, not "type a server path".
+        key_files = list_key_files() or [DEFAULT_KEY_FILE]
+        idx = key_files.index(DEFAULT_KEY_FILE) if DEFAULT_KEY_FILE in key_files else 0
+        key_file = st.selectbox(
+            "Key file", options=key_files, index=idx,
+            format_func=os.path.basename, label_visibility="collapsed",
+        )
 
     with c_verd:
         if sess and sess.done:
@@ -418,6 +462,23 @@ def render_top_bar(sess: Optional[RunSession]) -> None:
             st.toast(f"Started {rid}")
         except Exception as exc:  # noqa: BLE001
             st.error(f"Failed to start run: {exc}")
+        st.rerun()
+
+    if replay_clicked:
+        # The "watch the log grow" story in one click: reset, start a fresh
+        # run, but do NOT auto-step — the page loads at step 0 (intake in
+        # control) so the visitor then clicks Step to walk the chain.
+        old = get_session()
+        if old is not None:
+            old.reset()
+        new_sess = RunSession(data_dir="data")
+        try:
+            rid = new_sess.start_run(key_file)
+            st.session_state["session"] = new_sess
+            st.session_state["selected"] = None
+            st.toast(f"Replay started: {rid}. Click Step to advance.")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to start replay: {exc}")
         st.rerun()
 
     if reset_clicked:
@@ -465,6 +526,18 @@ def main() -> None:
         st.caption(f"last error: {sess.error}")
 
     sess = get_session()
+
+    # --- the idiot-proof replay hint ------------------------------------
+    # The page auto-runs the whole chain on load so a first visitor sees a
+    # populated screen. The *best* story is then "watch the log grow", so tell
+    # them, in plain words right under the controls, how to replay it slowly.
+    if sess and sess.done:
+        st.info(
+            "This page loaded the **completed run** on first visit — the full "
+            "chain already ran so the screen is populated. Click **↻ Replay** "
+            "(or **↺ Reset**), then **⏭ Step** to watch the payload move from "
+            "agent to agent and the event log grow one row at a time."
+        )
 
     # --- main area -------------------------------------------------------
     if sess is None:

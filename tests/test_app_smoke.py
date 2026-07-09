@@ -27,8 +27,8 @@ def app():
 
 
 def test_top_bar_has_controls(app):
-    # Start, Step, Reset live in the top bar (main area), not the sidebar.
-    assert len(app.button) == 3
+    # Start, Step, Reset, Replay live in the top bar (main area), not sidebar.
+    assert len(app.button) == 4
     assert len(app.sidebar.button) == 0
 
 
