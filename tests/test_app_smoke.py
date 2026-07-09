@@ -1,8 +1,8 @@
 """Smoke test for the Streamlit UI, driven through streamlit.testing.AppTest.
 
-Exercises the killer demo click sequence (Start → Step ×4) and the Network
-tab's detail-panel render path, asserting no exceptions and a green verdict.
-Requires streamlit + streamlit_agraph (both in requirements.txt).
+Exercises the killer demo click sequence (Start → Step ×4) on the one-screen
+dashboard and the click-to-inspect detail panel, asserting no exceptions and a
+green verdict. Requires streamlit + streamlit_agraph (both in requirements.txt).
 """
 
 from __future__ import annotations
@@ -26,18 +26,20 @@ def app():
     return at
 
 
-def test_sidebar_has_controls(app):
-    assert len(app.sidebar.button) == 3  # Start, Step, Reset
+def test_top_bar_has_controls(app):
+    # Start, Step, Reset live in the top bar (main area), not the sidebar.
+    assert len(app.button) == 3
+    assert len(app.sidebar.button) == 0
 
 
 def test_full_run_via_clicks(app):
-    app.sidebar.button[0].click().run()  # Start
+    app.button[0].click().run()  # Start
     assert not app.exception, f"start: {app.exception}"
     sess = app.session_state["session"]
     assert sess and sess.run_id
 
     for i in range(4):
-        app.sidebar.button[1].click().run()  # Step
+        app.button[1].click().run()  # Step
         assert not app.exception, f"step {i+1}: {app.exception}"
 
     assert app.session_state["session"].done
@@ -47,7 +49,7 @@ def test_full_run_via_clicks(app):
 
 
 def test_detail_panel_for_artifact(app):
-    app.sidebar.button[0].click().run()  # Start
+    app.button[0].click().run()  # Start
     assert not app.exception
     app.session_state["selected"] = "artifact.raw_input"
     app.run()
@@ -55,7 +57,7 @@ def test_detail_panel_for_artifact(app):
 
 
 def test_detail_panel_for_agent(app):
-    app.sidebar.button[0].click().run()
+    app.button[0].click().run()
     assert not app.exception
     app.session_state["selected"] = "schema_agent"
     app.run()

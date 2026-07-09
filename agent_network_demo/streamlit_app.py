@@ -1,26 +1,32 @@
-"""Streamlit UI for the agent-network demo.
+"""Streamlit UI for the agent-network demo — a single one-screen dashboard.
 
 Run from the repo root::
 
     streamlit run agent_network_demo/streamlit_app.py
 
-The centrepiece is an interactive **relation map** (streamlit_agraph) showing
-the two node kinds — agents and the artifacts (keys) they pass between them —
-and three edge kinds: writes (agent → artifact), reads (artifact → agent,
-i.e. the key being passed), and handoffs (agent → agent). As you step the
-chain, nodes and edges fill in: acted agents turn green, written artifacts
-light up, traversed edges get colour. Click any node to open a detail panel.
+The thesis is **agents pass keys (references), not blobs**. The envelope
+between agents is a real *capability token*: an agent may read only the keys it
+was handed (``input_keys``) and write only the one key its ``output_contract``
+licenses — enforced by the scoped ``StoreView`` the runner hands each agent.
 
-Layout:
-  - Sidebar: choose key file, Start / Step / Reset.
-  - Hero + spine (the agent pipeline with per-step badges).
-  - Tabs: Network (graph + detail) | Chain | State registry | Event log |
-    Agent messages | Final report.
+Everything fits on one screen under one header:
+  - Top bar: run id + Start / Step / Reset + key file + verdict chip.
+  - Spine: the four-agent pipeline with per-step badges.
+  - Main row: the interactive **relation map** (streamlit_agraph) on the left,
+    and on the right the **key-handoff strip** (which keys just moved between
+    agents) plus a click-to-inspect detail panel.
+  - Bottom row: compact state-registry cards (the shared store by key) and the
+    append-only event log.
+  - A verdict banner once the ShadowJudge has acted.
+
+Node kinds: agents (dots) and artifacts (boxes). Edge kinds: writes
+(agent → artifact), reads (artifact → agent, i.e. the key being passed), and
+handoffs (agent → agent). As you step, nodes/edges fill in; click any node to
+inspect it.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -35,6 +41,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from agent_network_demo import ui
+from agent_network_demo.contracts import write_key_for
 from agent_network_demo.demo_runner import RunSession
 
 DEFAULT_KEY_FILE = os.path.join(
@@ -115,7 +122,6 @@ def build_graph(sess: RunSession):
     for aid, key in ui.WRITES.items():
         status = artifact_status(key)
         traversed = status is not None
-        # colour the write edge by the artifact status when present
         col = ui.ARTIFACT_STATUS.get(status, ui.GREEN) if traversed else ui.GREEN
         edge(f"w-{aid}", aid, key, "writes", traversed, col)
 
@@ -131,44 +137,6 @@ def build_graph(sess: RunSession):
         edge(f"h-{src}-{dst}", src, dst, htype, traversed, ui.NAVY)
 
     return nodes, edges
-
-
-def render_network_tab(sess: RunSession) -> None:
-    ui.section_header(
-        "Agent Network — the relation map",
-        "Agents (dots) pass keys (boxes) to each other — never the content. "
-        "Fill = type, border = status, arrows show writes / reads / handoffs. "
-        "Click a node to inspect it.",
-    )
-    ui.map_legend()
-
-    nodes, edges = build_graph(sess)
-    cfg = Config(
-        width=820, height=560, directed=True, physics=False,
-        hierarchical=True, direction="LR", nodeSpacing=130, levelSeparation=170,
-        nodeHighlightBehavior=True, highlightColor=ui.BLUE,
-    )
-    graph_col, detail_col = st.columns([2.1, 1])
-    with graph_col:
-        clicked = agraph(nodes=nodes, edges=edges, config=cfg)
-        if clicked:
-            st.session_state["selected"] = clicked
-    with detail_col:
-        sel = st.session_state.get("selected")
-        if not sel:
-            st.info("⬅ Click a node to open its detail panel.")
-            return
-        agent_ids = {a[0] for a in ui.AGENTS}
-        if sel in agent_ids:
-            chain = {n["agent"]: n["state"] for n in sess.chain_status()}
-            # find an envelope describing this agent: the envelope whose
-            # to_agent == sel (inbound), else the one whose from_agent == sel.
-            env = _envelope_for_agent(sess, sel)
-            ui.agent_detail(sel, chain.get(sel, "waiting"), env, sess.events())
-        elif sess.store.has(sel):
-            ui.artifact_detail(sel, sess.store.get(sel))
-        else:
-            st.info(f"Node `{sel}` has no detail yet.")
 
 
 def _envelope_for_agent(sess: RunSession, aid: str) -> Dict[str, Any]:
@@ -220,82 +188,103 @@ def spine_states(sess: RunSession) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Tabs
+# Detail panel (click a node)
 # ---------------------------------------------------------------------------
 
-def render_chain_tab(sess: RunSession) -> None:
-    ui.section_header("Chain",
-                      "The four agents in order — who has control, who acted, "
-                      "who is waiting. Each card shows the contract it produces "
-                      "and the keys it reads.")
-    # envelopes by to_agent for the flow cards
-    env_by_to: Dict[str, Dict[str, Any]] = {}
-    env = sess.current_envelope()
-    if env:
-        env_by_to[env.get("to_agent", "")] = env
-    ui.chain_flow(sess.chain_status(), env_by_to)
-    st.caption("🎯 control = runs next · ✅ acted · ⏳ waiting")
-    st.markdown("**Current handoff envelope** (references, not content):")
-    st.code(json.dumps(sess.current_envelope(), indent=2, ensure_ascii=False),
-            language="json")
-
-
-def render_state_tab(sess: RunSession) -> None:
-    ui.section_header("State registry",
-                      "The shared artifact store — content lives here by key, "
-                      "not in the envelopes between agents.")
-    state = sess.state()
-    if not state:
-        st.info("No artifacts yet. Run the first agent to seed the store.")
+def render_detail(sess: RunSession, sel: Optional[str]) -> None:
+    """Inspect a clicked node: an agent or an artifact key."""
+    if not sel:
+        st.info("⬅ Click a node in the map to inspect it.")
         return
-    for key, art in state.items():
-        with st.expander(f"{key}  —  `{art.get('type')}` · {art.get('status')}"):
-            show = {k: v for k, v in art.items() if k != "source_hash"}
-            show["source_hash"] = (art.get("source_hash") or "")[:12] + "…"
-            st.json(show)
+    agent_ids = {a[0] for a in ui.AGENTS}
+    if sel in agent_ids:
+        chain = {n["agent"]: n["state"] for n in sess.chain_status()}
+        env = _envelope_for_agent(sess, sel)
+        ui.agent_detail(sel, chain.get(sel, "waiting"), env, sess.events())
+    elif sess.store.has(sel):
+        ui.artifact_detail(sel, sess.store.get(sel))
+    else:
+        st.info(f"Node `{sel}` has no detail yet.")
 
 
-def render_events_tab(sess: RunSession) -> None:
-    ui.section_header("Event log (append-only audit trail)",
-                      "Every agent action recorded with its input keys, output "
-                      "keys, status, and checks.")
-    ui.event_rows(sess.events())
+# ---------------------------------------------------------------------------
+# Top bar (run controls)
+# ---------------------------------------------------------------------------
 
+def render_top_bar(sess: Optional[RunSession]) -> None:
+    """One row: run id · Start · Step · Reset · key file · verdict chip.
+    Returns nothing — button clicks are handled here with st.rerun()."""
+    c_id, c_start, c_step, c_reset, c_kf, c_verd = st.columns(
+        [1.0, 0.75, 0.75, 0.75, 1.7, 0.9])
 
-def render_messages_tab(sess: RunSession) -> None:
-    ui.section_header("Agent messages",
-                      "The same trail, narrated as one message per agent action.")
-    events = sess.events()
-    if not events:
-        st.info("No agent messages yet.")
-        return
-    for ev in events:
-        body = ev.get("message") or ev["action"]
-        st.chat_message("assistant", avatar="🤖").markdown(
-            f"**{ev['agent']}** ({ev['action']}): {body}"
-        )
+    with c_id:
+        if sess and sess.run_id:
+            st.markdown(
+                f'<span class="and-chip and-runid">{sess.run_id}</span>',
+                unsafe_allow_html=True)
+            if sess.done:
+                st.markdown('<span class="and-chip" style="margin-top:4px">done</span>',
+                            unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="and-chip" style="color:#94a3b8">no run</span>',
+                        unsafe_allow_html=True)
 
+    with c_start:
+        start_clicked = st.button("▶ Start", use_container_width=True)
+    with c_step:
+        step_clicked = st.button("⏭ Step", use_container_width=True)
+    with c_reset:
+        reset_clicked = st.button("↺ Reset", use_container_width=True)
+    with c_kf:
+        key_file = st.text_input("Key file", value=DEFAULT_KEY_FILE,
+                                 label_visibility="collapsed")
 
-def render_report_tab(sess: RunSession) -> None:
-    ui.section_header("Final report", "The human-readable receipt once the "
-                      "ShadowJudge has acted.")
-    report = sess.report()
-    if not report.get("done"):
-        st.info("Run the full chain to produce the final report.")
-        return
-    verdict = report.get("verdict") or {}
-    status = verdict.get("status", "—")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Verdict", status)
-    c2.metric("Events", report.get("event_count", 0))
-    c3.metric("Agents acted", f"{report.get('agents_acted', 0)}/{report.get('total_agents', 0)}")
-    if report.get("reasons"):
-        st.markdown("**Reasons**")
-        for r in report["reasons"]:
-            st.markdown(f"- {r}")
-    if report.get("checks"):
-        st.markdown("**Checks**")
-        st.json(report["checks"])
+    with c_verd:
+        if sess and sess.done:
+            v = sess.report().get("verdict") or {}
+            status = v.get("status", "—")
+            col = {"ok": ui.GREEN, "warn": ui.AMBER}.get(status, ui.RED)
+            st.markdown(
+                f'<span class="and-verdchip" style="background:{col}">'
+                f'{status.upper()}</span>',
+                unsafe_allow_html=True)
+        elif sess and sess.error:
+            st.markdown(
+                f'<span class="and-verdchip" style="background:{ui.RED}">ERROR</span>',
+                unsafe_allow_html=True)
+
+    # --- handle clicks ---------------------------------------------------
+    if start_clicked:
+        new_sess = RunSession(data_dir="data")
+        try:
+            rid = new_sess.start_run(key_file)
+            st.session_state["session"] = new_sess
+            st.session_state["selected"] = None
+            st.toast(f"Started {rid}")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to start run: {exc}")
+        st.rerun()
+
+    if reset_clicked:
+        sess = get_session()
+        if sess is not None:
+            sess.reset()
+        st.session_state["session"] = None
+        st.session_state["selected"] = None
+        st.rerun()
+
+    if step_clicked:
+        sess = get_session()
+        if sess is None:
+            st.warning("Start a run first.")
+        else:
+            try:
+                sess.step()
+            except RuntimeError as exc:
+                st.warning(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Step failed: {exc}")
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -305,89 +294,74 @@ def render_report_tab(sess: RunSession) -> None:
 def main() -> None:
     st.set_page_config(page_title="Agents pass keys, not blobs", layout="wide")
     ui.inject_css()
-    ui.hero("Agents pass keys, not blobs",
-            "A deterministic multi-agent demo. Agents hand each other *references* "
-            "into a shared artifact store — never the content itself.")
-
-    # --- sidebar controls --------------------------------------------------
-    with st.sidebar:
-        st.header("Run controls")
-        key_file = st.text_input("Key file path", value=DEFAULT_KEY_FILE)
-        c1, c2 = st.columns(2)
-        start_clicked = c1.button("▶ Start", use_container_width=True)
-        step_clicked = c2.button("⏭ Step", use_container_width=True)
-        reset_clicked = st.button("↺ Reset", use_container_width=True)
-
-        if start_clicked:
-            new_sess = RunSession(data_dir="data")
-            try:
-                rid = new_sess.start_run(key_file)
-                st.session_state["session"] = new_sess
-                st.session_state["selected"] = None
-                st.toast(f"Started {rid}")
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Failed to start run: {exc}")
-            st.rerun()
-
-        if reset_clicked:
-            sess = get_session()
-            if sess is not None:
-                sess.reset()
-            st.session_state["session"] = None
-            st.session_state["selected"] = None
-            st.rerun()
-
-        if step_clicked:
-            sess = get_session()
-            if sess is None:
-                st.warning("Start a run first.")
-            else:
-                try:
-                    sess.step()
-                except RuntimeError as exc:
-                    st.warning(str(exc))
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Step failed: {exc}")
-            st.rerun()
-
-        st.divider()
-        sess = get_session()
-        if sess is not None and sess.run_id:
-            st.markdown(f"**run_id:** `{sess.run_id}`")
-            st.markdown(f"**done:** `{sess.done}`")
-            if sess.error:
-                st.error(sess.error)
-            if sess.done:
-                v = sess.report().get("verdict") or {}
-                st.metric("Verdict", v.get("status", "—"))
+    ui.hero(
+        "Agents pass keys, not blobs",
+        "A deterministic multi-agent demo. Agents hand each other *references* "
+        "into a shared artifact store — never the content. The envelope is a "
+        "real capability token: an agent can read only the keys it was handed.",
+        compact=True,
+    )
 
     sess = get_session()
 
-    # --- main area ---------------------------------------------------------
+    # --- top bar (controls) ----------------------------------------------
+    render_top_bar(sess)
+    if sess and sess.error:
+        st.caption(f"last error: {sess.error}")
+
+    sess = get_session()
+
+    # --- main area -------------------------------------------------------
     if sess is None:
         st.info(
-            "No active run. Click **▶ Start** in the sidebar, then **⏭ Step** "
-            "to walk the chain: Intake → Schema → Transform → Validation. "
-            "Watch the relation map fill in as keys are written and read."
+            "No active run. Click **▶ Start** above, then **⏭ Step** to walk "
+            "the chain: Intake → Schema → Transform → Validation. Watch the "
+            "relation map fill in as keys are written and read, and the "
+            "key-handoff strip show which references move between agents."
         )
         return
 
     ui.spine(spine_states(sess), spine_badges(sess))
 
-    tabs = st.tabs(["Network", "Chain", "State registry", "Event log",
-                    "Agent messages", "Final report"])
-    with tabs[0]:
-        render_network_tab(sess)
-    with tabs[1]:
-        render_chain_tab(sess)
-    with tabs[2]:
-        render_state_tab(sess)
-    with tabs[3]:
-        render_events_tab(sess)
-    with tabs[4]:
-        render_messages_tab(sess)
-    with tabs[5]:
-        render_report_tab(sess)
+    # Main row: relation map | key-handoff strip + detail panel.
+    graph_col, detail_col = st.columns([2.3, 1])
+    with graph_col:
+        ui.map_legend()
+        nodes, edges = build_graph(sess)
+        cfg = Config(
+            width=840, height=480, directed=True, physics=False,
+            hierarchical=True, direction="LR", nodeSpacing=130, levelSeparation=160,
+            nodeHighlightBehavior=True, highlightColor=ui.BLUE,
+        )
+        clicked = agraph(nodes=nodes, edges=edges, config=cfg)
+        if clicked:
+            st.session_state["selected"] = clicked
+    with detail_col:
+        env = sess.current_envelope()
+        ui.key_handoff(env, write_key_for(env.get("output_contract", "")), sess.store)
+        st.markdown("")  # small breath
+        sel = st.session_state.get("selected")
+        render_detail(sess, sel)
+
+    # Bottom row: state registry cards | event log.
+    st.markdown("")  # small gap
+    bl, br = st.columns([1, 1])
+    with bl:
+        ui.section_header("State registry",
+                          "The shared artifact store — content lives here by key, "
+                          "not in the envelopes between agents.")
+        ui.state_cards(sess.state())
+    with br:
+        ui.section_header("Event log",
+                          "Append-only audit trail: every action with its input "
+                          "keys, output keys, status, and checks.")
+        ui.event_rows(sess.events(), scroll=True)
+
+    # Verdict banner once the ShadowJudge has acted.
+    if sess.done:
+        v = sess.report().get("verdict")
+        if v:
+            ui.verdict_banner(v)
 
 
 if __name__ == "__main__":  # pragma: no cover

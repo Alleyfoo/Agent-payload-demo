@@ -2,9 +2,12 @@
 
 A small, deterministic multi-agent demo where the central idea is: **agents
 hand each other *references* into a shared artifact store — never the content
-itself.** An append-only event log records who did what, with which input and
-output keys. v1 uses deterministic mock agents — no LLM, no network. The
-architecture is the point.
+itself.** The handoff envelope between agents is a real *capability token*:
+an agent may read only the keys it was handed (`input_keys`) and write only
+the one key its `output_contract` licenses — enforced by a scoped store view,
+not just labelled. An append-only event log records who did what, with which
+input and output keys. v1 uses deterministic mock agents — no LLM, no
+network. The architecture is the point.
 
 ```
 Key file
@@ -105,27 +108,34 @@ requirements.txt         # streamlit, pytest (dev)
   `register(key, artifact)` stamps a `source_hash` (sha256 of canonical JSON).
   Re-registering the same content is idempotent; re-registering *different*
   content under an existing key raises `DuplicateKeyError`. `get`, `keys`,
-  `as_dict`, `summary` for the UI.
+  `as_dict`, `summary` for the UI. `view(read_keys, write_key)` returns a
+  capability-scoped `StoreView`: `get`/`has` are gated by `read_keys` and
+  `register` by `write_key`, so a caller cannot read or write a key it was not
+  granted.
 - **`event_log.py`** — `EventLog.append(event)` assigns `evt_NNN` + an
   ISO-8601 timestamp, writes a JSONL line to `data/events_{run_id}.jsonl`,
   and keeps an in-memory list. `for_run` / `all` / `as_dicts` for read-back.
 - **`contracts.py`** — `HandoffEnvelope` dataclass. `validate_inbound(store)`
   checks every declared `input_key` exists before an agent runs;
-  `validate_outbound(output_keys)` checks that the keys an agent wrote match
-  its declared `output_contract`. `ALLOWED_ACTIONS` and `OUTPUT_CONTRACTS`
-  are closed sets — an agent's powers are declared on the envelope, not
-  invented at runtime.
+  `write_key_for(output_contract)` maps a contract to the single key an agent
+  may write. `ALLOWED_ACTIONS` and `OUTPUT_CONTRACTS` are closed sets — an
+  agent's powers are declared on the envelope, not invented at runtime.
 - **`agents.py`** — four deterministic mock agents, each
-  `run(envelope, store, log) -> HandoffEnvelope`. No LLM, no network.
+  `run(envelope, view, log) -> HandoffEnvelope`. The agent reads only its
+  granted keys through the scoped `view` and writes exactly one output key,
+  then builds the outbound envelope choosing which keys to hand the next
+  agent. No LLM, no network.
   - `IntakeAgent`: loads the key file's payload, writes `artifact.raw_input`.
   - `SchemaAgent`: infers column→type, writes `artifact.schema_profile`.
   - `TransformAgent`: coerces/normalizes the table, writes `artifact.cleaned_output`.
   - `ValidationAgent` (ShadowJudge): independently re-reads the chain's
     artifacts + event log, writes `artifact.validation_verdict` (ok/warn + reasons).
 - **`demo_runner.py`** — `RunSession`: `start_run(key_file)` creates a `run_id`,
-  seeds the store + log, builds the ordered agent list; `step()` runs the
-  current agent, validates the contract in/out, advances, returns a snapshot;
-  `reset()` clears the run. Exposes `chain_status`, `state`, `events`,
+  seeds the store + log, builds the ordered agent list; `step()` builds a
+  `StoreView` from the inbound envelope (`input_keys` → read grant,
+  `output_contract` → write grant), runs the agent through it, and advances —
+  so a read/write outside the grant raises `ContractError` and errors the
+  step. `reset()` clears the run. Exposes `chain_status`, `state`, `events`,
   `report`.
 
 ## Run
@@ -149,7 +159,12 @@ streamlit run agent_network_demo/streamlit_app.py
 4. Step again → SchemaAgent writes `artifact.schema_profile`; event log +1.
 5. Step again → TransformAgent writes `artifact.cleaned_output`; event log +1.
 6. Step again → the ShadowJudge validates the chain, writes
-   `artifact.validation_verdict`; the **Final report** tab fills in.
+   `artifact.validation_verdict`; the **verdict banner** fills in.
+
+Everything above lives on one screen: the relation map (left), the key-handoff
+strip + click-to-inspect detail (right), and the state-registry cards + event
+log across the bottom. The handoff strip shows, each step, exactly which keys
+the next agent was handed and what it may produce — the passing made visible.
 
 ## Artifact key scheme
 

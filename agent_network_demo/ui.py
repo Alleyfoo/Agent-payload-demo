@@ -121,6 +121,8 @@ h1, h2, h3, h4 { font-family: 'Archivo', system-ui, sans-serif; font-weight: 800
 .and-hero { border-left: 6px solid #e8732a; padding-left: 18px; margin-bottom: 6px; }
 .and-hero h1 { font-size: 2.4rem; margin: 0; }
 .and-hero p { color: #5b6b7f; margin: 6px 0 0; font-size: 1.02rem; }
+.and-compact-hero h1 { font-size: 1.9rem; }
+.and-compact-hero p { font-size: .95rem; }
 
 /* Section header */
 .and-head { border-left: 5px solid #e8732a; padding-left: 14px; margin: 2px 0 18px; }
@@ -186,15 +188,51 @@ h1, h2, h3, h4 { font-family: 'Archivo', system-ui, sans-serif; font-weight: 800
 .and-ev .eid { font-family:ui-monospace,Menlo,Consolas,monospace; color:#94a3b8; font-size:.7rem; flex:none; width:54px; }
 .and-ev .ebody { flex:1; font-size:.84rem; }
 .and-ev .ebody b { color:#0f2a4d; }
+.and-evlog-scroll { max-height:236px; overflow-y:auto; border:1px solid #eef2f7; border-radius:10px;
+                    padding:2px 4px; background:#fff; }
+
+/* Top-bar control chips */
+.and-chip { font-size:.72rem; font-weight:700; padding:5px 10px; border-radius:8px;
+            background:#eef2f7; color:#0f2a4d; display:inline-block; }
+.and-runid { font-family:ui-monospace,Menlo,Consolas,monospace; }
+.and-verdchip { font-size:.72rem; font-weight:800; padding:5px 11px; border-radius:8px; color:#fff; display:inline-block; }
+
+/* Key-handoff strip (makes the passing visible) */
+.and-handoff { background:#fff; border:1px solid #e2e9f3; border-left:5px solid #2563c9;
+               border-radius:12px; padding:12px 14px; }
+.and-handoff .hh { font-size:.6rem; text-transform:uppercase; letter-spacing:.06em;
+                   color:#7a899c; font-weight:700; }
+.and-handoff .hflow { display:flex; align-items:center; flex-wrap:wrap; gap:7px;
+                      margin-top:7px; font-size:.82rem; color:#0f2a4d; }
+.and-handoff .hflow .agent { font-weight:800; }
+.and-handoff .hflow .arrow { color:#94a3b8; font-weight:700; }
+.and-keys { display:flex; flex-wrap:wrap; gap:5px; }
+
+/* State registry compact cards */
+.and-stategrid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.and-statecard { background:#fff; border:1px solid #e2e9f3; border-radius:10px;
+                 padding:10px 12px; border-top:3px solid var(--acc,#94a3b8); }
+.and-statecard.ghost { opacity:.55; border-style:dashed; }
+.and-statecard .sk { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.71rem;
+                     color:#2563c9; word-break:break-all; }
+.and-statecard .st { font-size:.7rem; color:#5b6b7f; margin-top:3px; }
+.and-statecard .sh { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.62rem; color:#94a3b8; }
+
+/* Verdict banner */
+.and-verdict { border-radius:12px; padding:14px 16px; margin-top:8px;
+               border:1px solid var(--vc,#e2e9f3); background:var(--vb,#fff); }
+.and-verdict h3 { margin:0 0 4px; font-size:1.15rem; }
+.and-verdict .vsub { font-size:.78rem; color:#5b6b7f; }
 </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def hero(title: str, subtitle: str) -> None:
+def hero(title: str, subtitle: str, compact: bool = False) -> None:
+    cls = "and-hero and-compact-hero" if compact else "and-hero"
     st.markdown(
-        f'<div class="and-hero"><h1>{_e(title)}</h1>'
+        f'<div class="{cls}"><h1>{_e(title)}</h1>'
         f'{f"<p>{_e(subtitle)}</p>" if subtitle else ""}</div>',
         unsafe_allow_html=True,
     )
@@ -382,7 +420,7 @@ def chain_flow(chain_status: List[Dict[str, str]], envelopes_by_to: Dict[str, Di
 
 
 # --- Event log ---------------------------------------------------------------
-def event_rows(events: List[Dict[str, Any]]) -> None:
+def event_rows(events: List[Dict[str, Any]], scroll: bool = False) -> None:
     if not events:
         st.info("No events yet — step an agent to grow the audit trail.")
         return
@@ -405,6 +443,122 @@ def event_rows(events: List[Dict[str, Any]]) -> None:
             f'<br><span style="color:#7a899c">in: {_e(ins)} → out: {_e(outs)}</span>'
             f'{checks_span}{msg_span}</span></div>'
         )
+    body = "".join(h)
+    if scroll:
+        body = f'<div class="and-evlog-scroll">{body}</div>'
+    st.markdown(body, unsafe_allow_html=True)
+
+
+# --- Key-handoff strip (makes the passing visible) ---------------------------
+def key_handoff(envelope: Dict[str, Any], write_key: str,
+                store: Optional[Any] = None) -> None:
+    """Render the current envelope as a visible key handoff: who handed which
+    keys to whom, and what the receiver may produce. This is the element that
+    turns "agents pass keys" from a claim into something you can see change
+    each step."""
+    if not envelope:
+        st.info("No handoff yet — start a run.")
+        return
+    alabel = dict((a, lbl) for a, _ic, lbl, _s in AGENTS)
+    from_agent = envelope.get("from_agent", "—")
+    to_agent = envelope.get("to_agent", "—")
+    in_keys = envelope.get("input_keys", []) or []
+    contract = envelope.get("output_contract", "")
+
+    if in_keys:
+        in_chips = "".join(f'<span class="and-key">{_e(k)}</span>' for k in in_keys)
+    else:
+        in_chips = '<span style="color:#94a3b8;font-size:.8rem">∅ (reads the file system, not the store)</span>'
+
+    if write_key:
+        written = bool(store is not None and store.has(write_key))
+        mark = "✓ " if written else ""
+        wchip = f'<span class="and-key">{mark}{_e(write_key)}</span>'
+    else:
+        wchip = '<span style="color:#94a3b8;font-size:.8rem">— (terminal agent)</span>'
+
+    h = ['<div class="and-handoff">']
+    h.append('<div class="hh">Key handoff — references, not content</div>')
+    h.append('<div class="hflow">')
+    h.append(f'<span class="agent">{_e(alabel.get(from_agent, from_agent))}</span>')
+    h.append('<span class="arrow">handed</span>')
+    h.append(f'<span class="and-keys">{in_chips}</span>')
+    h.append('<span class="arrow">→</span>')
+    h.append(f'<span class="agent">{_e(alabel.get(to_agent, to_agent))}</span>')
+    h.append('</div>')
+    h.append(f'<div class="hflow" style="margin-top:9px">'
+             f'<span class="hh" style="margin:0">may produce</span>{wchip}'
+             f'<span style="color:#94a3b8;font-size:.72rem">{_e(contract)}</span></div>')
+    h.append('</div>')
+    st.markdown("".join(h), unsafe_allow_html=True)
+
+
+# --- State registry compact cards --------------------------------------------
+def state_cards(state: Dict[str, Dict[str, Any]]) -> None:
+    """A compact 2×2 grid of the four artifact keys — written ones coloured by
+    status, absent ones ghosted. Always shows all four so the 'store fills in'
+    story is visible at a glance."""
+    h = ['<div class="and-stategrid">']
+    for key, _short, _ic, label, _tint, _acc in ARTIFACTS:
+        art = state.get(key)
+        if art:
+            status = art.get("status", "—")
+            sc = ARTIFACT_STATUS.get(status, MUTED)
+            sh = (art.get("source_hash") or "")[:10] + "…"
+            h.append(
+                f'<div class="and-statecard" style="--acc:{sc}">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center">'
+                f'<b style="color:#0f2a4d;font-size:.82rem">{_e(label)}</b>'
+                f'{badge(status, sc, _tint_for_status(status))}</div>'
+                f'<div class="sk">{_e(key)}</div>'
+                f'<div class="st">{_e(art.get("type", ""))}</div>'
+                f'<div class="sh">{_e(sh)}</div></div>'
+            )
+        else:
+            h.append(
+                f'<div class="and-statecard ghost" style="--acc:{GHOST}">'
+                f'<b style="color:#0f2a4d;font-size:.82rem">{_e(label)}</b>'
+                f'<div class="sk">{_e(key)}</div>'
+                f'<div class="st">not written yet</div></div>'
+            )
+    h.append('</div>')
+    st.markdown("".join(h), unsafe_allow_html=True)
+
+
+# --- Verdict banner ----------------------------------------------------------
+def verdict_banner(verdict: Dict[str, Any]) -> None:
+    """The prominent end-of-run receipt: verdict status, checks passed count,
+    reasons, and per-check badges."""
+    if not verdict:
+        return
+    status = verdict.get("status", "—")
+    if status == "ok":
+        vc, vb, icon = GREEN, "#e8f7ee", "✅"
+    elif status == "warn":
+        vc, vb, icon = AMBER, "#fdeede", "⚠️"
+    else:
+        vc, vb, icon = RED, "#fde8e8", "❌"
+    checks = verdict.get("checks", {}) or {}
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    reasons = verdict.get("reasons", []) or []
+    h = [f'<div class="and-verdict" style="--vc:{vc};--vb:{vb}">']
+    h.append(
+        f'<h3>{icon} Verdict: {_e(status).upper()} '
+        f'<span style="font-size:.8rem;color:#5b6b7f;font-weight:600">'
+        f'· {passed}/{total} checks passed</span></h3>'
+    )
+    if reasons:
+        h.append('<div class="vsub">' + " · ".join(_e(r) for r in reasons) + '</div>')
+    if checks:
+        h.append('<div class="and-checks" style="margin-top:8px">')
+        for ck, cv in checks.items():
+            col = GREEN if cv else (AMBER if cv is False else MUTED)
+            mark = "✓" if cv else ("✗" if cv is False else "•")
+            h.append(badge(f"{mark} {ck}", col,
+                           _tint_for_status("ok" if cv else ("warn" if cv is False else "pending"))))
+        h.append('</div>')
+    h.append('</div>')
     st.markdown("".join(h), unsafe_allow_html=True)
 
 
