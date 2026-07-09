@@ -49,7 +49,7 @@ def test_full_run_via_clicks(app):
 def test_detail_panel_for_artifact(app):
     app.sidebar.button[0].click().run()  # Start
     assert not app.exception
-    app.session_state["selected"] = "artifact.raw_input.preview"
+    app.session_state["selected"] = "artifact.raw_input"
     app.run()
     assert not app.exception, f"detail panel: {app.exception}"
 

@@ -17,7 +17,7 @@ from agent_network_demo.agents import (
     KEY_VERDICT,
 )
 from agent_network_demo.artifact_store import ArtifactStore
-from agent_network_demo.contracts import HandoffEnvelope
+from agent_network_demo.contracts import HandoffEnvelope, write_key_for
 from agent_network_demo.event_log import EventLog
 
 FIX_SAMPLE = "agent_network_demo/fixtures/sample_payload.json"
@@ -33,11 +33,20 @@ def seed_envelope(run_id="run_001", to_agent="intake_agent"):
     )
 
 
+def _view(store, env):
+    """Build the same capability-scoped view the runner hands an agent: read
+    grant = the envelope's input_keys, write grant = its output_contract's
+    key. Tests use this so they exercise the real capability path, not a
+    permissive bare store."""
+    return store.view(read_keys=list(env.input_keys),
+                      write_key=write_key_for(env.output_contract))
+
+
 def test_intake_writes_raw_preview(data_dir):
     store = ArtifactStore()
     log = EventLog("run_001", data_dir=str(data_dir))
     env = seed_envelope()
-    out = IntakeAgent(source_ref=FIX_SAMPLE).run(env, store, log)
+    out = IntakeAgent(source_ref=FIX_SAMPLE).run(env, _view(store, env), log)
     assert store.has(KEY_RAW_INPUT)
     art = store.get(KEY_RAW_INPUT)
     assert art["type"] == "table_preview"
@@ -56,12 +65,12 @@ def test_intake_writes_raw_preview(data_dir):
 def test_schema_infers_types(data_dir):
     store = ArtifactStore()
     log = EventLog("run_002", data_dir=str(data_dir))
-    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), store, log)
+    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     env = HandoffEnvelope(run_id="run_002", from_agent="intake_agent",
                           to_agent="schema_agent", handoff_type="schema_request",
                           input_keys=[KEY_RAW_INPUT],
                           output_contract="schema_profile.v1")
-    out = SchemaAgent().run(env, store, log)
+    out = SchemaAgent().run(env, _view(store, env), log)
     assert store.has(KEY_SCHEMA)
     schema = store.get(KEY_SCHEMA)
     types = {f["name"]: f["type"] for f in schema["fields"]}
@@ -75,18 +84,18 @@ def test_schema_infers_types(data_dir):
 def test_transform_produces_cleaned_output(data_dir):
     store = ArtifactStore()
     log = EventLog("run_003", data_dir=str(data_dir))
-    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), store, log)
+    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     env = HandoffEnvelope(run_id="run_003", from_agent="intake_agent",
                           to_agent="schema_agent", handoff_type="schema_request",
                           input_keys=[KEY_RAW_INPUT],
                           output_contract="schema_profile.v1")
-    SchemaAgent().run(env, store, log)
+    SchemaAgent().run(env, _view(store, env), log)
     env2 = HandoffEnvelope(run_id="run_003", from_agent="schema_agent",
                            to_agent="transform_agent",
                            handoff_type="transform_request",
                            input_keys=[KEY_RAW_INPUT, KEY_SCHEMA],
                            output_contract="cleaned_output.v1")
-    out = TransformAgent().run(env2, store, log)
+    out = TransformAgent().run(env2, _view(store, env2), log)
     assert store.has(KEY_CLEANED)
     cleaned = store.get(KEY_CLEANED)
     assert cleaned["row_count"] == 20
@@ -110,18 +119,18 @@ def test_transform_coerces_string_numbers(data_dir, tmp_path):
 
     store = ArtifactStore()
     log = EventLog("run_c", data_dir=str(data_dir))
-    IntakeAgent(source_ref=str(src)).run(seed_envelope(), store, log)
+    IntakeAgent(source_ref=str(src)).run(seed_envelope(), _view(store, seed_envelope()), log)
     env = HandoffEnvelope(run_id="run_c", from_agent="intake_agent",
                           to_agent="schema_agent", handoff_type="schema_request",
                           input_keys=[KEY_RAW_INPUT],
                           output_contract="schema_profile.v1")
-    SchemaAgent().run(env, store, log)
+    SchemaAgent().run(env, _view(store, env), log)
     env2 = HandoffEnvelope(run_id="run_c", from_agent="schema_agent",
                            to_agent="transform_agent",
                            handoff_type="transform_request",
                            input_keys=[KEY_RAW_INPUT, KEY_SCHEMA],
                            output_contract="cleaned_output.v1")
-    TransformAgent().run(env2, store, log)
+    TransformAgent().run(env2, _view(store, env2), log)
     cleaned = store.get(KEY_CLEANED)
     row = cleaned["preview_rows"][0]
     assert row["Order ID"] == 1
@@ -135,7 +144,7 @@ def test_validation_writes_verdict_ok(data_dir):
     store = ArtifactStore()
     log = EventLog("run_004", data_dir=str(data_dir))
     # Walk the whole chain.
-    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), store, log)
+    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     SchemaAgent().run(HandoffEnvelope(run_id="run_004", from_agent="intake_agent",
         to_agent="schema_agent", handoff_type="schema_request",
         input_keys=[KEY_RAW_INPUT], output_contract="schema_profile.v1"),
@@ -149,7 +158,7 @@ def test_validation_writes_verdict_ok(data_dir):
         to_agent="validation_agent", handoff_type="validation_request",
         input_keys=[KEY_RAW_INPUT, KEY_SCHEMA, KEY_CLEANED],
         output_contract="validation_verdict.v1")
-    out = ValidationAgent().run(env_v, store, log)
+    out = ValidationAgent().run(env_v, _view(store, env_v), log)
     assert store.has(KEY_VERDICT)
     verdict = store.get(KEY_VERDICT)
     assert verdict["status"] == "ok"
@@ -167,11 +176,11 @@ def test_validation_warns_on_incomplete_chain(data_dir):
     store = ArtifactStore()
     log = EventLog("run_005", data_dir=str(data_dir))
     # Only run intake — chain incomplete.
-    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), store, log)
+    IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     env_v = HandoffEnvelope(run_id="run_005", from_agent="transform_agent",
         to_agent="validation_agent", handoff_type="validation_request",
         input_keys=[], output_contract="validation_verdict.v1")
-    ValidationAgent().run(env_v, store, log)
+    ValidationAgent().run(env_v, _view(store, env_v), log)
     verdict = store.get(KEY_VERDICT)
     assert verdict["status"] == "warn"
     assert verdict["checks"]["chain_complete"] is False
@@ -183,7 +192,7 @@ def test_agents_do_not_carry_content_in_envelope(data_dir):
     never artifact content."""
     store = ArtifactStore()
     log = EventLog("run_006", data_dir=str(data_dir))
-    out = IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), store, log)
+    out = IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     # The envelope must not embed the table rows anywhere.
     blob = json.dumps(out.to_dict())
     assert "Alice Tan" not in blob

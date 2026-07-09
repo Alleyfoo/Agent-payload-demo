@@ -37,7 +37,7 @@ content:
   "from_agent": "intake_agent",
   "to_agent": "schema_agent",
   "handoff_type": "schema_request",
-  "input_keys": ["artifact.raw_input.preview"],
+  "input_keys": ["artifact.raw_input"],
   "output_contract": "schema_profile.v1",
   "context_summary": "Uploaded order file needs schema inference.",
   "allowed_actions": ["read_artifact", "write_schema_profile"]
@@ -48,7 +48,7 @@ The shared state holds the content by key:
 
 ```json
 {
-  "artifact.raw_input.preview": {
+  "artifact.raw_input": {
     "type": "table_preview",
     "rows": 20,
     "columns": ["Order ID", "Customer", "Date", "Total"],
@@ -65,7 +65,7 @@ The event log grows:
   "run_id": "run_001",
   "agent": "schema_agent",
   "action": "write_artifact",
-  "input_keys": ["artifact.raw_input.preview"],
+  "input_keys": ["artifact.raw_input"],
   "output_keys": ["artifact.schema_profile"],
   "status": "ok",
   "checks": { "schema_valid": true, "allowed_write": true },
@@ -117,7 +117,7 @@ requirements.txt         # streamlit, pytest (dev)
   invented at runtime.
 - **`agents.py`** — four deterministic mock agents, each
   `run(envelope, store, log) -> HandoffEnvelope`. No LLM, no network.
-  - `IntakeAgent`: loads the key file's payload, writes `artifact.raw_input.preview`.
+  - `IntakeAgent`: loads the key file's payload, writes `artifact.raw_input`.
   - `SchemaAgent`: infers column→type, writes `artifact.schema_profile`.
   - `TransformAgent`: coerces/normalizes the table, writes `artifact.cleaned_output`.
   - `ValidationAgent` (ShadowJudge): independently re-reads the chain's
@@ -145,7 +145,7 @@ streamlit run agent_network_demo/streamlit_app.py
 1. Load `agent_network_demo/fixtures/key_file.json` (the default).
 2. Click **▶ Start run**.
 3. Click **⏭ Step next agent** → IntakeAgent writes
-   `artifact.raw_input.preview`; event log +1 row.
+   `artifact.raw_input`; event log +1 row.
 4. Step again → SchemaAgent writes `artifact.schema_profile`; event log +1.
 5. Step again → TransformAgent writes `artifact.cleaned_output`; event log +1.
 6. Step again → the ShadowJudge validates the chain, writes
@@ -155,7 +155,7 @@ streamlit run agent_network_demo/streamlit_app.py
 
 Used everywhere (fixtures, agents, tests):
 
-- `artifact.raw_input.preview`
+- `artifact.raw_input`
 - `artifact.schema_profile`
 - `artifact.cleaned_output`
 - `artifact.validation_verdict`

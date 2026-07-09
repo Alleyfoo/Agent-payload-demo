@@ -8,11 +8,14 @@ deliberately simple.
 
 Agent interface::
 
-    run(envelope, store, log) -> HandoffEnvelope
+    run(envelope, view, log) -> HandoffEnvelope
 
-``envelope`` is the inbound envelope (validated by the runner). The agent
-reads ``envelope.input_keys`` from ``store`` and writes exactly one output
-key, then emits an event and builds the outbound envelope to the next agent.
+``envelope`` is the inbound envelope (validated by the runner). ``view`` is a
+capability-scoped handle to the shared store: the agent may ``get`` only the
+keys in ``envelope.input_keys`` and ``register`` only the one key its
+``output_contract`` licenses — anything else raises ``ContractError``. The
+agent reads its granted keys, writes exactly one output key, emits an event,
+and builds the outbound envelope (choosing which keys to hand the next agent).
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent_network_demo.artifact_store import ArtifactStore
+from agent_network_demo.artifact_store import StoreView
 from agent_network_demo.contracts import (
     ACTION_READ_ARTIFACT,
     ACTION_WRITE_CLEANED_OUTPUT,
@@ -46,7 +49,7 @@ from agent_network_demo.contracts import (
 from agent_network_demo.event_log import Event, EventLog
 
 # Canonical artifact keys — used everywhere (fixtures, README, tests).
-KEY_RAW_INPUT = "artifact.raw_input.preview"
+KEY_RAW_INPUT = "artifact.raw_input"
 KEY_SCHEMA = "artifact.schema_profile"
 KEY_CLEANED = "artifact.cleaned_output"
 KEY_VERDICT = "artifact.validation_verdict"
@@ -175,7 +178,7 @@ class IntakeAgent(_BaseAgent):
 
     This is the *entry* agent: its inbound envelope's ``input_keys`` are
     empty (it reads the file system, not the store). It writes
-    ``artifact.raw_input.preview``.
+    ``artifact.raw_input``.
     """
 
     name = "intake_agent"
@@ -188,7 +191,7 @@ class IntakeAgent(_BaseAgent):
     def __init__(self, source_ref: str = "fixtures/sample_payload.json") -> None:
         self.source_ref = source_ref
 
-    def run(self, envelope: HandoffEnvelope, store: ArtifactStore,
+    def run(self, envelope: HandoffEnvelope, view: StoreView,
             log: EventLog) -> HandoffEnvelope:
         # Load the payload the key file points at.
         rows = self._load_payload(self.source_ref)
@@ -211,7 +214,7 @@ class IntakeAgent(_BaseAgent):
             "source_ref": self.source_ref,
             "preview_rows": rows[:5],
         }
-        store.register(KEY_RAW_INPUT, preview)
+        view.register(KEY_RAW_INPUT, preview)
         self._emit(
             log, action="write_artifact",
             input_keys=[], output_keys=[KEY_RAW_INPUT],
@@ -253,9 +256,9 @@ class SchemaAgent(_BaseAgent):
     next_output_contract = CONTRACT_CLEANED_OUTPUT
     next_allowed_actions = (ACTION_READ_ARTIFACT, ACTION_WRITE_CLEANED_OUTPUT)
 
-    def run(self, envelope: HandoffEnvelope, store: ArtifactStore,
+    def run(self, envelope: HandoffEnvelope, view: StoreView,
             log: EventLog) -> HandoffEnvelope:
-        preview = store.get(KEY_RAW_INPUT)
+        preview = view.get(KEY_RAW_INPUT)
         # Re-load the full payload (the preview only keeps 5 rows) to infer
         # types over the whole table — deterministic, no LLM.
         source_ref = preview.get("source_ref", "fixtures/sample_payload.json")
@@ -270,7 +273,7 @@ class SchemaAgent(_BaseAgent):
             "fields": schema["fields"],
             "row_count": schema["row_count"],
         }
-        store.register(KEY_SCHEMA, profile)
+        view.register(KEY_SCHEMA, profile)
         self._emit(
             log, action="write_artifact",
             input_keys=[KEY_RAW_INPUT], output_keys=[KEY_SCHEMA],
@@ -297,10 +300,10 @@ class TransformAgent(_BaseAgent):
     next_output_contract = CONTRACT_VALIDATION_VERDICT
     next_allowed_actions = (ACTION_READ_ARTIFACT, ACTION_WRITE_VALIDATION_VERDICT)
 
-    def run(self, envelope: HandoffEnvelope, store: ArtifactStore,
+    def run(self, envelope: HandoffEnvelope, view: StoreView,
             log: EventLog) -> HandoffEnvelope:
-        preview = store.get(KEY_RAW_INPUT)
-        schema = store.get(KEY_SCHEMA)
+        preview = view.get(KEY_RAW_INPUT)
+        schema = view.get(KEY_SCHEMA)
         source_ref = preview.get("source_ref", "fixtures/sample_payload.json")
         rows = IntakeAgent._load_payload(source_ref)
 
@@ -325,7 +328,7 @@ class TransformAgent(_BaseAgent):
             "preview_rows": cleaned_rows[:5],
             "coerced_cells": coerced,
         }
-        store.register(KEY_CLEANED, cleaned)
+        view.register(KEY_CLEANED, cleaned)
         self._emit(
             log, action="write_artifact",
             input_keys=[KEY_RAW_INPUT, KEY_SCHEMA], output_keys=[KEY_CLEANED],
@@ -375,14 +378,14 @@ class ValidationAgent(_BaseAgent):
     next_output_contract = ""
     next_allowed_actions = ()
 
-    def run(self, envelope: HandoffEnvelope, store: ArtifactStore,
+    def run(self, envelope: HandoffEnvelope, view: StoreView,
             log: EventLog) -> HandoffEnvelope:
         checks: Dict[str, Any] = {}
         reasons: List[str] = []
 
-        # 1. chain complete: every expected artifact is present.
+        # 1. chain complete: every expected artifact is present (and granted).
         expected = [KEY_RAW_INPUT, KEY_SCHEMA, KEY_CLEANED]
-        present = [k for k in expected if store.has(k)]
+        present = [k for k in expected if view.has(k)]
         checks["chain_complete"] = len(present) == len(expected)
         if not checks["chain_complete"]:
             missing = [k for k in expected if k not in present]
@@ -404,9 +407,9 @@ class ValidationAgent(_BaseAgent):
 
         # 3. schema matches cleaned output columns.
         schema_matches = True
-        if store.has(KEY_SCHEMA) and store.has(KEY_CLEANED):
-            schema_cols = store.get(KEY_SCHEMA).get("columns", [])
-            cleaned_cols = store.get(KEY_CLEANED).get("columns", [])
+        if view.has(KEY_SCHEMA) and view.has(KEY_CLEANED):
+            schema_cols = view.get(KEY_SCHEMA).get("columns", [])
+            cleaned_cols = view.get(KEY_CLEANED).get("columns", [])
             schema_matches = schema_cols == cleaned_cols
             checks["schema_matches_output"] = schema_matches
             if not schema_matches:
@@ -418,8 +421,8 @@ class ValidationAgent(_BaseAgent):
         # 4. row counts agree across the chain.
         counts = []
         for k in (KEY_RAW_INPUT, KEY_CLEANED):
-            if store.has(k):
-                counts.append(store.get(k).get("row_count"))
+            if view.has(k):
+                counts.append(view.get(k).get("row_count"))
         checks["row_counts_consistent"] = (
             len(set(counts)) <= 1 and None not in counts
         )
@@ -434,7 +437,7 @@ class ValidationAgent(_BaseAgent):
             "checks": checks,
             "reasons": reasons if reasons else ["all checks passed"],
         }
-        store.register(KEY_VERDICT, verdict)
+        view.register(KEY_VERDICT, verdict)
         self._emit(
             log, action="validate",
             input_keys=[KEY_RAW_INPUT, KEY_SCHEMA, KEY_CLEANED],

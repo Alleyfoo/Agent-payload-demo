@@ -69,6 +69,16 @@ _CONTRACT_PREFIX: Dict[str, str] = {
 }
 
 
+def write_key_for(output_contract: str) -> str:
+    """The single canonical key an agent with this ``output_contract`` may
+    write. Every canonical key equals its contract's prefix, so this is also
+    the key the runner hands an agent as its scoped write grant. Returns ``""``
+    for an empty contract (a terminal agent that writes nothing)."""
+    if not output_contract:
+        return ""
+    return _CONTRACT_PREFIX.get(output_contract, "")
+
+
 class ContractError(ValueError):
     """Raised when an envelope violates the contract rules."""
 

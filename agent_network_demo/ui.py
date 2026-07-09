@@ -39,7 +39,7 @@ AGENTS: List[Tuple[str, str, str, str]] = [
 
 # Artifact metadata: (key, short, icon, label, tint, accent).
 ARTIFACTS: List[Tuple[str, str, str, str, str, str]] = [
-    ("artifact.raw_input.preview", "raw_input", "database", "Raw input",
+    ("artifact.raw_input", "raw_input", "database", "Raw input",
      "#e7f0fb", BLUE),
     ("artifact.schema_profile", "schema_profile", "nodes", "Schema",
      "#dff3f3", TEAL),
@@ -51,16 +51,16 @@ ARTIFACTS: List[Tuple[str, str, str, str, str, str]] = [
 
 # Who writes what.
 WRITES: Dict[str, str] = {
-    "intake_agent": "artifact.raw_input.preview",
+    "intake_agent": "artifact.raw_input",
     "schema_agent": "artifact.schema_profile",
     "transform_agent": "artifact.cleaned_output",
     "validation_agent": "artifact.validation_verdict",
 }
 # Who reads what (the keys that travel between agents).
 READS: Dict[str, List[str]] = {
-    "schema_agent": ["artifact.raw_input.preview"],
-    "transform_agent": ["artifact.raw_input.preview", "artifact.schema_profile"],
-    "validation_agent": ["artifact.raw_input.preview",
+    "schema_agent": ["artifact.raw_input"],
+    "transform_agent": ["artifact.raw_input", "artifact.schema_profile"],
+    "validation_agent": ["artifact.raw_input",
                          "artifact.schema_profile",
                          "artifact.cleaned_output"],
 }

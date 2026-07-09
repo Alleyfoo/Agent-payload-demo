@@ -40,7 +40,7 @@ def test_state_grows_one_artifact_per_step(key_file_path, data_dir):
     sess = RunSession(data_dir=str(data_dir))
     sess.start_run(key_file_path)
     expected = [
-        "artifact.raw_input.preview",
+        "artifact.raw_input",
         "artifact.schema_profile",
         "artifact.cleaned_output",
         "artifact.validation_verdict",
@@ -125,3 +125,24 @@ def test_contract_violation_surfaces_as_error(key_file_path, data_dir):
     assert "missing" in snap.message.lower() or "contract" in snap.message.lower()
     # _current did not advance — the agent can be retried.
     assert sess._current == 0
+
+
+def test_ungranted_read_is_blocked_by_capability_view(key_file_path, data_dir):
+    """The envelope is a real capability token, not a label. Grant Transform
+    an empty input_keys: validate_inbound passes (nothing is *missing*), but
+    the scoped view then denies every read Transform attempts — the step
+    errors at the view gate, not at inbound existence. This is the
+    load-bearing difference from the old permissive shared store."""
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    sess.step()  # intake -> writes raw_input
+    sess.step()  # schema -> writes schema
+    # Tamper: hand Transform NO keys. Both raw_input and schema exist in the
+    # store, so validate_inbound (existence) is happy — but the view denies.
+    sess._envelope.input_keys = []
+    snap = sess.step()  # would-be Transform step
+    assert snap.status == "error"
+    assert "denied" in snap.message.lower() or "contract" in snap.message.lower()
+    # The agent did not advance — chain stayed at transform (index 2).
+    assert sess._current == 2
+    assert sess.chain_status()[2]["state"] == "control"

@@ -39,7 +39,7 @@ from agent_network_demo.agents import (
     KEY_VERDICT,
 )
 from agent_network_demo.artifact_store import ArtifactStore
-from agent_network_demo.contracts import HandoffEnvelope, ContractError
+from agent_network_demo.contracts import HandoffEnvelope, ContractError, write_key_for
 from agent_network_demo.event_log import Event, EventLog
 
 
@@ -138,22 +138,20 @@ class RunSession:
         status = "ok"
         message = ""
         event_count_before = len(self.log.all())
-        before_keys = set(self.store.keys())
         try:
             # Inbound contract check: declared input keys must exist.
             envelope.validate_inbound(self.store)
 
-            new_envelope = agent.run(envelope, self.store, self.log)
-
-            # Outbound contract check: what did the agent actually write?
-            written = [k for k in self.store.keys() if k not in before_keys]
-            written_envelope = HandoffEnvelope(
-                run_id=envelope.run_id, from_agent=agent.name,
-                to_agent=envelope.to_agent, handoff_type=envelope.handoff_type,
-                input_keys=envelope.input_keys,
-                output_contract=envelope.output_contract,
+            # Hand the agent a *capability-scoped* view of the store, not the
+            # store itself. The envelope's input_keys are the read grant; the
+            # output_contract's key is the single write grant. The view raises
+            # ContractError on any read/write outside those grants — that is
+            # what makes "passing keys" load-bearing instead of decorative.
+            view = self.store.view(
+                read_keys=list(envelope.input_keys),
+                write_key=write_key_for(envelope.output_contract),
             )
-            written_envelope.validate_outbound(written)
+            new_envelope = agent.run(envelope, view, self.log)
 
             self._envelope = new_envelope
             self._current += 1
