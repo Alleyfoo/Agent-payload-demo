@@ -57,6 +57,34 @@ def get_session() -> Optional[RunSession]:
     return st.session_state.get("session")
 
 
+def ensure_session_or_autostart() -> Optional[RunSession]:
+    """Return the current session, or — on a fresh visit — auto-start and run
+    the whole chain so the page loads already populated (full map, key-handoff
+    strip, state cards, event log, verdict banner). A visitor gets the whole
+    story without clicking anything, then uses Reset + Step to replay it.
+
+    A one-shot: once ``initialized`` is set we never auto-start again, so an
+    explicit Reset leaves the page clean instead of instantly refilling."""
+    sess = get_session()
+    if sess is not None:
+        return sess
+    if st.session_state.get("initialized"):
+        return None
+    st.session_state["initialized"] = True
+    try:
+        new_sess = RunSession(data_dir="data")
+        new_sess.start_run(DEFAULT_KEY_FILE)
+        for _ in range(len(RunSession.AGENT_NAMES)):
+            if new_sess.done:
+                break
+            new_sess.step()
+        st.session_state["session"] = new_sess
+        return new_sess
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash the page
+        st.error(f"Auto-start failed: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Relation map (the centrepiece)
 # ---------------------------------------------------------------------------
@@ -302,7 +330,7 @@ def main() -> None:
         compact=True,
     )
 
-    sess = get_session()
+    sess = ensure_session_or_autostart()
 
     # --- top bar (controls) ----------------------------------------------
     render_top_bar(sess)
@@ -311,13 +339,17 @@ def main() -> None:
 
     sess = get_session()
 
+    if sess and sess.done:
+        st.caption("Run complete — click **↺ Reset**, then **⏭ Step** to watch it build step-by-step.")
+
     # --- main area -------------------------------------------------------
     if sess is None:
         st.info(
-            "No active run. Click **▶ Start** above, then **⏭ Step** to walk "
-            "the chain: Intake → Schema → Transform → Validation. Watch the "
-            "relation map fill in as keys are written and read, and the "
-            "key-handoff strip show which references move between agents."
+            "Run cleared. Click **▶ Start** to begin a fresh run, then "
+            "**⏭ Step** to walk the chain: Intake → Schema → Transform → "
+            "Validation. Watch the relation map fill in as keys are written "
+            "and read, and the key-handoff strip show which references move "
+            "between agents."
         )
         return
 

@@ -32,6 +32,22 @@ def test_top_bar_has_controls(app):
     assert len(app.sidebar.button) == 0
 
 
+def test_autostarts_full_run_on_load(app):
+    # A fresh visit loads an already-completed run, not an empty page.
+    sess = app.session_state["session"]
+    assert sess is not None
+    assert sess.run_id
+    assert sess.done is True
+    assert sess.report()["verdict"]["status"] == "ok"
+
+
+def test_reset_clears_without_reautostarting(app):
+    # Reset leaves the page clean; it must not instantly auto-run again.
+    app.button[2].click().run()  # Reset
+    assert not app.exception, f"reset: {app.exception}"
+    assert app.session_state["session"] is None
+
+
 def test_full_run_via_clicks(app):
     app.button[0].click().run()  # Start
     assert not app.exception, f"start: {app.exception}"
