@@ -6,3 +6,6 @@ venv/
 data/*.jsonl
 .idea/
 .vscode/
+.handoff.md
+REWRITE_PLAN.md
+.pytest_cache/
