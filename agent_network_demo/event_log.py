@@ -1,9 +1,8 @@
-"""Append-only event log — the audit trail of the agent pipeline.
+"""Application-API append-only event log for the agent pipeline.
 
-Every agent action (read, write, validate) appends one event. Events are
-written as JSONL (one JSON object per line) to ``data/events_{run_id}.jsonl``
-and kept in memory for the UI to read back. The log is append-only: there is
-no update, no delete — only append. That is the whole integrity story.
+Agent work and trusted-runner receipts are appended to JSONL and retained in
+memory for UI read-back. This API has no update/delete operation; it is not a
+cryptographic tamper-evidence mechanism.
 """
 
 from __future__ import annotations

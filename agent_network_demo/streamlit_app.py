@@ -5,7 +5,7 @@ Run from the repo root::
     streamlit run agent_network_demo/streamlit_app.py
 
 The thesis is **agents pass keys (references), not blobs**. The envelope
-between agents is a real *capability token*: an agent may read only the keys it
+between agents is a runner-enforced scoped handoff: an agent may read only the keys it
 was handed (``input_keys``) and write only the one key its ``output_contract``
 licenses — enforced by the scoped ``StoreView`` the runner hands each agent.
 
@@ -16,8 +16,8 @@ Everything fits on one screen under one header:
     and on the right the **key-handoff strip** (which keys just moved between
     agents) plus a click-to-inspect detail panel.
   - Bottom row: compact state-registry cards (the shared store by key) and the
-    append-only event log.
-  - A verdict banner once the ShadowJudge has acted.
+    event log, append-only through the application API.
+  - A verdict banner once ValidationAgent has acted.
 
 Node kinds: agents (dots) and artifacts (boxes). Edge kinds: writes
 (agent → artifact), reads (artifact → agent, i.e. the key being passed), and
@@ -53,7 +53,7 @@ DEFAULT_KEY_FILE = os.path.join(
 def list_key_files() -> List[str]:
     """The key files the demo may run — every JSON file *inside the fixtures
     dir* that looks like a key file (carries ``source_ref`` +
-    ``allowed_actions``). The UI offers only these, never a free-text path:
+    ``run_intent``). The UI offers only these, never a free-text path:
     the public demo must not have a "please type a server path" box next to a
     page about safe agent payloads. The runner confines the chosen key file's
     ``source_ref`` to this same dir, so the whole input surface is bounded."""
@@ -68,7 +68,7 @@ def list_key_files() -> List[str]:
                 data = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and "source_ref" in data and "allowed_actions" in data:
+        if isinstance(data, dict) and "source_ref" in data and "run_intent" in data:
             out.append(path)
     return out
 
@@ -289,19 +289,8 @@ def render_concrete_data(sess: RunSession) -> None:
         "📄 The real CSV, the real transformation, the real logfile",
         expanded=True,
     ):
-        # The store holds the confined *absolute* payload path; show a
-        # repo-relative one in the narrative so the story reads cleanly while
-        # still pointing at a real on-disk file.
-        src = raw.get("source_ref", "")
-        display_src = src
-        try:
-            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            rel = os.path.relpath(src, repo_root)
-            if not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel)):
-                display_src = rel
-        except ValueError:
-            pass
-        ui.narrative_block(display_src)
+        src = raw.get("source_name", "")
+        ui.narrative_block(src)
         c1, c2 = st.columns(2)
         with c1:
             ui.data_table(
@@ -326,7 +315,7 @@ def render_concrete_data(sess: RunSession) -> None:
                 log_text = fh.read()
         st.markdown(
             f'<div class="and-dtbl" style="margin-top:10px">'
-            f'<div class="and-dtbl-h">Logfile (append-only JSONL)</div>'
+        f'<div class="and-dtbl-h">Logfile (application-API append-only JSONL)</div>'
             f'<div class="and-dtbl-s">{path or "—"}</div></div>',
             unsafe_allow_html=True,
         )
@@ -514,7 +503,7 @@ def main() -> None:
         "Agents pass keys, not blobs",
         "A deterministic multi-agent demo. Agents hand each other *references* "
         "into a shared artifact store — never the content. The envelope is a "
-        "real capability token: an agent can read only the keys it was handed.",
+        "runner-enforced scoped handoff: an agent can read only the keys it was handed.",
         compact=True,
     )
 
@@ -584,8 +573,8 @@ def main() -> None:
             ui.state_cards(sess.state())
         with br:
             ui.section_header("Event log",
-                              "Append-only audit trail: every action with its input "
-                              "keys, output keys, status, and checks.")
+                              "Application-API append-only work events and trusted "
+                              "runner receipts.")
             ui.event_rows(sess.events(), scroll=True)
 
     # Concrete story (hidable): the real CSV, the real transformation, the real logfile.
@@ -594,7 +583,7 @@ def main() -> None:
     # Why keys beat paste: the 1000-pass comparison (hidable).
     render_comparison()
 
-    # Verdict banner once the ShadowJudge has acted (also carries the replay hint).
+    # Verdict banner once ValidationAgent has acted (also carries the replay hint).
     if sess.done:
         v = sess.report().get("verdict")
         if v:

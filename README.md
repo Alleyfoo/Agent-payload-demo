@@ -1,191 +1,108 @@
 # Agents pass keys, not blobs
 
-A small, deterministic multi-agent demo where the central idea is: **agents
-hand each other *references* into a shared artifact store — never the content
-itself.** The handoff envelope between agents is a real *capability token*:
-an agent may read only the keys it was handed (`input_keys`) and write only
-the one key its `output_contract` licenses — enforced by a scoped store view,
-not just labelled. An append-only event log records who did what, with which
-input and output keys. v1 uses deterministic mock agents — no LLM, no
-network. The architecture is the point.
+A small, deterministic, in-process architecture demo. Agents exchange artifact
+keys rather than payload content. A trusted runner constructs every
+runner-enforced scoped handoff, grants a capability-scoped store view, validates
+actual reads and writes, and records an authorization receipt after each stage.
+
+This is deliberately free of LLM, network, database, and distributed-execution
+dependencies. It demonstrates an architecture, not a cryptographic security
+boundary.
 
 ```
-Key file
-  ↓
-IntakeAgent        → writes artifact + event
-  ↓
-SchemaAgent        → writes schema + event
-  ↓
-TransformAgent     → writes transformed output + event
-  ↓
-ValidationAgent / ShadowJudge → writes verdict + event
-Human inspects the whole chain
+Key file (intent + bounded source selection)
+  -> trusted runner grants IntakeAgent
+  -> trusted runner grants SchemaAgent
+  -> trusted runner grants TransformAgent
+  -> trusted runner grants ValidationAgent
+  -> human-readable verdict
 ```
 
-Three things grow at once, visually:
+## How the boundary works
 
-1. **Agent chain** — who has control now, who already acted, who is waiting.
-2. **Shared state** — a registry of named artifacts (NOT one giant chat context).
-3. **Event log** — append-only JSONL: who did what, with what input key, what
-   output key, what validation result.
+- `ArtifactStore` owns immutable artifacts. Public reads and snapshots return
+  deep copies, and snapshot hydration verifies every `source_hash`.
+- `StoreView` permits only the runner-granted input keys and one contracted
+  output key. It records actual reads and writes for the runner receipt.
+- `IntakeAgent` is the only component in the agent chain that opens the source
+  file. It stores the complete rows at `artifact.raw_input`; UI panels show only
+  a preview.
+- Schema and Transform read complete source content from granted artifacts.
+  They never receive or reopen a filesystem path as operational input.
+- Agents return output keys, a summary, and operational details. They do not
+  construct the next permission-bearing envelope.
+- `WORKFLOW_ROUTES` in `demo_runner.py` fixes each receiving agent, input grant,
+  output contract, allowed action, and next stage. Key-file action fields cannot
+  grant runtime permissions.
+- The JSONL event log is append-only through the application API. It is not
+  described as tamper-proof or tamper-evident.
+- UUID-based run IDs avoid collisions between concurrent or deleted runs.
 
-## The trick: agents pass keys, not blobs
+## What this demo proves
 
-The handoff envelope (the message between agents) carries **references**, not
-content:
+- Handoffs carry keys rather than artifact content.
+- Runtime grants restrict reads and writes.
+- Only Intake accesses the source file.
+- Agents cannot choose their successors' permissions.
+- Artifact mutation outside a contracted write is blocked.
+- A final ValidationAgent checks the artifact chain and runner-owned receipts.
+
+## What this demo does not prove
+
+- Security between separate processes or machines.
+- Cryptographic identity or authorization.
+- LLM reliability.
+- Lower token usage at production scale.
+- Self-healing or adaptive retry.
+- Protection against a compromised trusted runner.
+
+## Handoff example
 
 ```json
 {
-  "run_id": "run_001",
+  "run_id": "run_7e2a...",
   "from_agent": "intake_agent",
   "to_agent": "schema_agent",
   "handoff_type": "schema_request",
   "input_keys": ["artifact.raw_input"],
   "output_contract": "schema_profile.v1",
-  "context_summary": "Uploaded order file needs schema inference.",
+  "context_summary": "Loaded 20 source rows.",
   "allowed_actions": ["read_artifact", "write_schema_profile"]
 }
 ```
 
-The shared state holds the content by key:
-
-```json
-{
-  "artifact.raw_input": {
-    "type": "table_preview",
-    "rows": 20,
-    "columns": ["Order ID", "Customer", "Date", "Total"],
-    "source_hash": "b8f3..."
-  }
-}
-```
-
-The event log grows:
-
-```json
-{
-  "event_id": "evt_003",
-  "run_id": "run_001",
-  "agent": "schema_agent",
-  "action": "write_artifact",
-  "input_keys": ["artifact.raw_input"],
-  "output_keys": ["artifact.schema_profile"],
-  "status": "ok",
-  "checks": { "schema_valid": true, "allowed_write": true },
-  "timestamp": "2026-07-09T07:12:44+00:00"
-}
-```
-
-Context stays manageable because agents carry references, not the whole
-world.
+The envelope contains a key and summary, not table rows. The complete raw rows
+remain in the artifact store.
 
 ## Project layout
 
 ```
 agent_network_demo/
-  streamlit_app.py      # Streamlit UI
-  demo_runner.py        # Steps agents one at a time; owns the RunSession
-  agents.py             # IntakeAgent, SchemaAgent, TransformAgent,
-                        #   ValidationAgent (ShadowJudge) — deterministic mocks
-  contracts.py          # HandoffEnvelope; allowed_actions; output_contract constants
-  event_log.py          # Append-only JSONL writer; Event dataclass; read-back
-  artifact_store.py     # ArtifactStore: register/get by key; source_hash
-  fixtures/
-    key_file.json       # starting permission / task pointer
-    sample_payload.json # sample tabular payload (20 orders)
-tests/
-  test_artifact_store.py
-  test_event_log.py
-  test_contracts.py
-  test_demo_runner.py
-  test_agents.py
-requirements.txt         # streamlit, pytest (dev)
+  streamlit_app.py      # Streamlit click-through UI
+  demo_runner.py        # trusted route table, envelopes, grants, receipts
+  agents.py             # deterministic Intake/Schema/Transform/Validation
+  contracts.py          # closed actions and output contracts
+  artifact_store.py     # immutable store and scoped StoreView
+  event_log.py          # application-API append-only JSONL log
+  fixtures/             # bounded key file and sample payloads
+tests/                  # unit, end-to-end, smoke, and adversarial tests
 ```
-
-## Module behaviors
-
-- **`artifact_store.py`** — `ArtifactStore` (in-memory, snapshots to JSON).
-  `register(key, artifact)` stamps a `source_hash` (sha256 of canonical JSON).
-  Re-registering the same content is idempotent; re-registering *different*
-  content under an existing key raises `DuplicateKeyError`. `get`, `keys`,
-  `as_dict`, `summary` for the UI. `view(read_keys, write_key)` returns a
-  capability-scoped `StoreView`: `get`/`has` are gated by `read_keys` and
-  `register` by `write_key`, so a caller cannot read or write a key it was not
-  granted.
-- **`event_log.py`** — `EventLog.append(event)` assigns `evt_NNN` + an
-  ISO-8601 timestamp, writes a JSONL line to `data/events_{run_id}.jsonl`,
-  and keeps an in-memory list. `for_run` / `all` / `as_dicts` for read-back.
-- **`contracts.py`** — `HandoffEnvelope` dataclass. `validate_inbound(store)`
-  checks every declared `input_key` exists before an agent runs;
-  `write_key_for(output_contract)` maps a contract to the single key an agent
-  may write. `ALLOWED_ACTIONS` and `OUTPUT_CONTRACTS` are closed sets — an
-  agent's powers are declared on the envelope, not invented at runtime.
-- **`agents.py`** — four deterministic mock agents, each
-  `run(envelope, view, log) -> HandoffEnvelope`. The agent reads only its
-  granted keys through the scoped `view` and writes exactly one output key,
-  then builds the outbound envelope choosing which keys to hand the next
-  agent. No LLM, no network.
-  - `IntakeAgent`: loads the key file's payload, writes `artifact.raw_input`.
-  - `SchemaAgent`: infers column→type, writes `artifact.schema_profile`.
-  - `TransformAgent`: coerces/normalizes the table, writes `artifact.cleaned_output`.
-  - `ValidationAgent` (ShadowJudge): independently re-reads the chain's
-    artifacts + event log, writes `artifact.validation_verdict` (ok/warn + reasons).
-- **`demo_runner.py`** — `RunSession`: `start_run(key_file)` creates a `run_id`,
-  seeds the store + log, builds the ordered agent list; `step()` builds a
-  `StoreView` from the inbound envelope (`input_keys` → read grant,
-  `output_contract` → write grant), runs the agent through it, and advances —
-  so a read/write outside the grant raises `ContractError` and errors the
-  step. `reset()` clears the run. Exposes `chain_status`, `state`, `events`,
-  `report`.
 
 ## Run
 
 ```bash
 pip install -r requirements.txt
-
-# tests
 pytest -q
-
-# the demo UI
 streamlit run agent_network_demo/streamlit_app.py
 ```
 
-### Killer demo (the click sequence)
+In the UI, click **Start run**, then **Step next agent** four times. Each step
+adds the agent's work event and the trusted runner's authorization receipt. The
+fourth step runs ValidationAgent and displays the final verdict.
 
-1. Load `agent_network_demo/fixtures/key_file.json` (the default).
-2. Click **▶ Start run**.
-3. Click **⏭ Step next agent** → IntakeAgent writes
-   `artifact.raw_input`; event log +1 row.
-4. Step again → SchemaAgent writes `artifact.schema_profile`; event log +1.
-5. Step again → TransformAgent writes `artifact.cleaned_output`; event log +1.
-6. Step again → the ShadowJudge validates the chain, writes
-   `artifact.validation_verdict`; the **verdict banner** fills in.
-
-Everything above lives on one screen: the relation map (left), the key-handoff
-strip + click-to-inspect detail (right), and the state-registry cards + event
-log across the bottom. The handoff strip shows, each step, exactly which keys
-the next agent was handed and what it may produce — the passing made visible.
-
-## Artifact key scheme
-
-Used everywhere (fixtures, agents, tests):
+## Artifact keys
 
 - `artifact.raw_input`
 - `artifact.schema_profile`
 - `artifact.cleaned_output`
 - `artifact.validation_verdict`
-
-## Future / out of scope
-
-- LLM-backed agents (Ollama) as a toggle — v1 is deliberately deterministic.
-- Persisting runs across restarts (snapshot store + log to disk).
-- More agents / branching chains.
-
-## Glossary
-
-- **Key file** — starting permission / task pointer.
-- **Handoff envelope** — the message between agents (keys + a summary, not content).
-- **Artifact store** — shared memory by key.
-- **Event log** — append-only audit trail.
-- **Shadow judge** — independent reviewer (`ValidationAgent`).
-- **Run report** — human-readable final receipt.

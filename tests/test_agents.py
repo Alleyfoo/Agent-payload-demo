@@ -30,7 +30,7 @@ def seed_envelope(run_id="run_001", to_agent="intake_agent"):
         handoff_type="intake_request", input_keys=[],
         output_contract="table_preview.v1",
         context_summary="ingest_orders",
-        allowed_actions=["read_artifact"],
+        allowed_actions=["write_table_preview"],
     )
 
 
@@ -53,9 +53,7 @@ def test_intake_writes_raw_preview(data_dir):
     assert art["type"] == "table_preview"
     assert art["rows"] == 20
     assert art["columns"] == ["Order ID", "Customer", "Date", "Total"]
-    assert out.to_agent == "schema_agent"
-    assert out.input_keys == [KEY_RAW_INPUT]
-    assert out.output_contract == "schema_profile.v1"
+    assert out.output_keys == [KEY_RAW_INPUT]
     events = log.all()
     assert len(events) == 1
     assert events[0].action == "write_artifact"
@@ -78,7 +76,7 @@ def test_schema_infers_types(data_dir):
     assert types["Order ID"] == "integer"
     assert types["Customer"] == "string"
     assert types["Total"] == "float"
-    assert out.to_agent == "transform_agent"
+    assert out.output_keys == [KEY_SCHEMA]
     log.close()
 
 
@@ -105,7 +103,7 @@ def test_transform_produces_cleaned_output(data_dir):
     first = cleaned["preview_rows"][0]
     assert first["Order ID"] == 1001
     assert isinstance(first["Total"], float)
-    assert out.to_agent == "validation_agent"
+    assert out.output_keys == [KEY_CLEANED]
     log.close()
 
 
@@ -159,7 +157,8 @@ def test_validation_writes_verdict_ok(data_dir):
         to_agent="validation_agent", handoff_type="validation_request",
         input_keys=[KEY_RAW_INPUT, KEY_SCHEMA, KEY_CLEANED],
         output_contract="validation_verdict.v1")
-    out = ValidationAgent().run(env_v, _view(store, env_v), log)
+    receipts = [{"status": "ok", "contract_result": "passed"}] * 3
+    out = ValidationAgent(receipts).run(env_v, _view(store, env_v), log)
     assert store.has(KEY_VERDICT)
     verdict = store.get(KEY_VERDICT)
     assert verdict["status"] == "ok"
@@ -169,7 +168,7 @@ def test_validation_writes_verdict_ok(data_dir):
     assert checks["all_writes_allowed"] is True
     assert checks["schema_matches_output"] is True
     assert checks["row_counts_consistent"] is True
-    assert out.to_agent == "human"
+    assert out.output_keys == [KEY_VERDICT]
     log.close()
 
 
@@ -229,7 +228,7 @@ def test_agents_do_not_carry_content_in_envelope(data_dir):
     log = EventLog("run_006", data_dir=str(data_dir))
     out = IntakeAgent(source_ref=FIX_SAMPLE).run(seed_envelope(), _view(store, seed_envelope()), log)
     # The envelope must not embed the table rows anywhere.
-    blob = json.dumps(out.to_dict())
+    blob = json.dumps(out.__dict__)
     assert "Alice Tan" not in blob
     assert "42.5" not in blob
     log.close()

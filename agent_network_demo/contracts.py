@@ -31,12 +31,14 @@ from agent_network_demo.artifact_store import ArtifactStore
 # ---------------------------------------------------------------------------
 
 ACTION_READ_ARTIFACT = "read_artifact"
+ACTION_WRITE_TABLE_PREVIEW = "write_table_preview"
 ACTION_WRITE_SCHEMA_PROFILE = "write_schema_profile"
 ACTION_WRITE_CLEANED_OUTPUT = "write_cleaned_output"
 ACTION_WRITE_VALIDATION_VERDICT = "write_validation_verdict"
 
 ALLOWED_ACTIONS: Set[str] = {
     ACTION_READ_ARTIFACT,
+    ACTION_WRITE_TABLE_PREVIEW,
     ACTION_WRITE_SCHEMA_PROFILE,
     ACTION_WRITE_CLEANED_OUTPUT,
     ACTION_WRITE_VALIDATION_VERDICT,
@@ -71,11 +73,9 @@ _CONTRACT_PREFIX: Dict[str, str] = {
 # The write action an envelope MUST be granted for a given output_contract.
 # This is what makes ``allowed_actions`` a real grant instead of descriptive
 # metadata: the contract the agent promises to fulfil must be backed by the
-# matching write permission. ``table_preview.v1`` (the intake/entry agent) is
-# intentionally absent — there is no ``write_table_preview`` action; intake's
-# only declared power is ``read_artifact`` (and it reads the filesystem, not
-# the store), so its envelope requires no write action.
+# matching write permission, including Intake's ``write_table_preview``.
 _REQUIRED_ACTION_FOR_CONTRACT: Dict[str, str] = {
+    CONTRACT_TABLE_PREVIEW: ACTION_WRITE_TABLE_PREVIEW,
     CONTRACT_SCHEMA_PROFILE: ACTION_WRITE_SCHEMA_PROFILE,
     CONTRACT_CLEANED_OUTPUT: ACTION_WRITE_CLEANED_OUTPUT,
     CONTRACT_VALIDATION_VERDICT: ACTION_WRITE_VALIDATION_VERDICT,

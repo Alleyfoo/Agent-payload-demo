@@ -56,16 +56,14 @@ def test_validate_inbound_requires_write_action_for_contract():
         env.validate_inbound(store)
 
 
-def test_validate_inbound_table_preview_needs_no_write_action():
-    # The intake/entry contract has no required write action — its only power
-    # is read_artifact. So an envelope with table_preview + read_artifact is
-    # valid even though there is no write_table_preview action.
+def test_validate_inbound_table_preview_requires_write_action():
     store = ArtifactStore()
     env = make_env(
         output_contract="table_preview.v1",
         allowed_actions=[ACTION_READ_ARTIFACT],
     )
-    env.validate_inbound(store)  # no raise
+    with pytest.raises(ContractError, match="write_table_preview"):
+        env.validate_inbound(store)
 
 
 def test_validate_inbound_passes_when_actions_match_contract():

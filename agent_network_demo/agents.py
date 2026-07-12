@@ -1,21 +1,8 @@
-"""Deterministic mock agents.
+"""Deterministic agents that return results, never permission-bearing handoffs.
 
-No LLM. No network. No randomness. Each agent reads keys from the shared
-store, does a small deterministic transformation, writes its output key,
-appends one event, and returns the *next* handoff envelope (carrying the new
-output key, not the content). The architecture is the point — the agents are
-deliberately simple.
-
-Agent interface::
-
-    run(envelope, view, log) -> HandoffEnvelope
-
-``envelope`` is the inbound envelope (validated by the runner). ``view`` is a
-capability-scoped handle to the shared store: the agent may ``get`` only the
-keys in ``envelope.input_keys`` and ``register`` only the one key its
-``output_contract`` licenses — anything else raises ``ContractError``. The
-agent reads its granted keys, writes exactly one output key, emits an event,
-and builds the outbound envelope (choosing which keys to hand the next agent).
+Each agent receives a runner-validated envelope and capability-scoped store
+view, reads granted keys, writes one contracted key, emits a descriptive work
+event, and returns an ``AgentResult``. The trusted runner owns all routing.
 """
 
 from __future__ import annotations
@@ -23,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
 # Ensure the package parent (repo root) is on sys.path so the absolute imports
@@ -35,14 +23,6 @@ if _REPO_ROOT not in sys.path:
 
 from agent_network_demo.artifact_store import StoreView
 from agent_network_demo.contracts import (
-    ACTION_READ_ARTIFACT,
-    ACTION_WRITE_CLEANED_OUTPUT,
-    ACTION_WRITE_SCHEMA_PROFILE,
-    ACTION_WRITE_VALIDATION_VERDICT,
-    CONTRACT_CLEANED_OUTPUT,
-    CONTRACT_SCHEMA_PROFILE,
-    CONTRACT_TABLE_PREVIEW,
-    CONTRACT_VALIDATION_VERDICT,
     ContractError,
     HandoffEnvelope,
 )
@@ -156,33 +136,9 @@ def _infer_schema(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class _BaseAgent:
-    """Common bookkeeping: name + a contract describing input/output."""
+    """Common event bookkeeping; routing belongs exclusively to the runner."""
 
     name: str = "base"
-    next_agent: str = ""
-    next_handoff_type: str = ""
-    next_input_keys: Tuple[str, ...] = ()
-    next_output_contract: str = ""
-    next_allowed_actions: Tuple[str, ...] = ()
-
-    def _next_envelope(self, envelope: HandoffEnvelope,
-                       output_key: str) -> HandoffEnvelope:
-        """Build the outbound envelope to the next agent."""
-        return HandoffEnvelope(
-            run_id=envelope.run_id,
-            from_agent=self.name,
-            to_agent=self.next_agent,
-            handoff_type=self.next_handoff_type,
-            input_keys=list(self.next_input_keys),
-            output_contract=self.next_output_contract,
-            context_summary=self._next_summary(envelope, output_key),
-            allowed_actions=list(self.next_allowed_actions),
-        )
-
-    def _next_summary(self, envelope: HandoffEnvelope,
-                      output_key: str) -> str:
-        return f"{self.name} produced {output_key}."
-
     def _emit(self, log: EventLog, action: str,
               input_keys: List[str], output_keys: List[str],
               status: str = "ok", checks: Dict[str, Any] = None,
@@ -199,6 +155,15 @@ class _BaseAgent:
         ))
 
 
+@dataclass
+class AgentResult:
+    """Non-authoritative work result; contains no routing or permissions."""
+
+    output_keys: List[str]
+    summary: str
+    operational_details: Dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # IntakeAgent — first agent in the chain.
 # ---------------------------------------------------------------------------
@@ -212,17 +177,11 @@ class IntakeAgent(_BaseAgent):
     """
 
     name = "intake_agent"
-    next_agent = "schema_agent"
-    next_handoff_type = "schema_request"
-    next_input_keys = (KEY_RAW_INPUT,)
-    next_output_contract = CONTRACT_SCHEMA_PROFILE
-    next_allowed_actions = (ACTION_READ_ARTIFACT, ACTION_WRITE_SCHEMA_PROFILE)
-
     def __init__(self, source_ref: str = "fixtures/sample_payload.json") -> None:
         self.source_ref = source_ref
 
     def run(self, envelope: HandoffEnvelope, view: StoreView,
-            log: EventLog) -> HandoffEnvelope:
+            log: EventLog) -> AgentResult:
         # Load the payload the key file points at.
         rows = self._load_payload(self.source_ref)
         if not rows:
@@ -241,7 +200,8 @@ class IntakeAgent(_BaseAgent):
             "rows": len(rows),
             "row_count": len(rows),
             "columns": columns,
-            "source_ref": self.source_ref,
+            "source_name": os.path.basename(self.source_ref),
+            "rows_data": rows,
             "preview_rows": rows[:5],
         }
         view.register(KEY_RAW_INPUT, preview)
@@ -249,12 +209,12 @@ class IntakeAgent(_BaseAgent):
             log, action="write_artifact",
             input_keys=[], output_keys=[KEY_RAW_INPUT],
             status="ok",
-            checks={"allowed_write": True, "rows": len(rows),
-                    "columns": len(columns)},
+            checks={"rows": len(rows), "columns": len(columns)},
             message=f"Loaded {len(rows)} rows × {len(columns)} columns from "
                     f"{self.source_ref}.",
         )
-        return self._next_envelope(envelope, KEY_RAW_INPUT)
+        return AgentResult([KEY_RAW_INPUT], f"Loaded {len(rows)} source rows.",
+                           {"rows": len(rows), "columns": len(columns)})
 
     @staticmethod
     def _load_payload(source_ref: str) -> List[Dict[str, Any]]:
@@ -287,19 +247,11 @@ class SchemaAgent(_BaseAgent):
     """Reads the raw preview, infers column types, writes a schema profile."""
 
     name = "schema_agent"
-    next_agent = "transform_agent"
-    next_handoff_type = "transform_request"
-    next_input_keys = (KEY_RAW_INPUT, KEY_SCHEMA)
-    next_output_contract = CONTRACT_CLEANED_OUTPUT
-    next_allowed_actions = (ACTION_READ_ARTIFACT, ACTION_WRITE_CLEANED_OUTPUT)
-
     def run(self, envelope: HandoffEnvelope, view: StoreView,
-            log: EventLog) -> HandoffEnvelope:
+            log: EventLog) -> AgentResult:
         preview = view.get(KEY_RAW_INPUT)
-        # Re-load the full payload (the preview only keeps 5 rows) to infer
-        # types over the whole table — deterministic, no LLM.
-        source_ref = preview.get("source_ref", "fixtures/sample_payload.json")
-        rows = IntakeAgent._load_payload(source_ref)
+        # Infer over the complete rows stored by Intake, not the UI preview.
+        rows = preview["rows_data"]
         schema = _infer_schema(rows)
 
         schema_valid = bool(schema["columns"]) and bool(schema["fields"])
@@ -316,11 +268,11 @@ class SchemaAgent(_BaseAgent):
             input_keys=[KEY_RAW_INPUT], output_keys=[KEY_SCHEMA],
             status="ok",
             checks={"schema_valid": schema_valid,
-                    "allowed_write": True,
                     "column_count": len(schema["columns"])},
             message=f"Inferred schema over {len(schema['columns'])} columns.",
         )
-        return self._next_envelope(envelope, KEY_SCHEMA)
+        return AgentResult([KEY_SCHEMA], "Inferred schema from raw artifact.",
+                           {"column_count": len(schema["columns"])})
 
 
 # ---------------------------------------------------------------------------
@@ -331,18 +283,11 @@ class TransformAgent(_BaseAgent):
     """Reads preview + schema, normalizes the table, writes cleaned output."""
 
     name = "transform_agent"
-    next_agent = "validation_agent"
-    next_handoff_type = "validation_request"
-    next_input_keys = (KEY_RAW_INPUT, KEY_SCHEMA, KEY_CLEANED)
-    next_output_contract = CONTRACT_VALIDATION_VERDICT
-    next_allowed_actions = (ACTION_READ_ARTIFACT, ACTION_WRITE_VALIDATION_VERDICT)
-
     def run(self, envelope: HandoffEnvelope, view: StoreView,
-            log: EventLog) -> HandoffEnvelope:
+            log: EventLog) -> AgentResult:
         preview = view.get(KEY_RAW_INPUT)
         schema = view.get(KEY_SCHEMA)
-        source_ref = preview.get("source_ref", "fixtures/sample_payload.json")
-        rows = IntakeAgent._load_payload(source_ref)
+        rows = preview["rows_data"]
 
         field_types = {f["name"]: f["type"] for f in schema["fields"]}
         cleaned_rows: List[Dict[str, Any]] = []
@@ -363,6 +308,7 @@ class TransformAgent(_BaseAgent):
             "row_count": len(cleaned_rows),
             "columns": schema["columns"],
             "preview_rows": cleaned_rows[:5],
+            "rows_data": cleaned_rows,
             "coerced_cells": coerced,
         }
         view.register(KEY_CLEANED, cleaned)
@@ -370,11 +316,12 @@ class TransformAgent(_BaseAgent):
             log, action="write_artifact",
             input_keys=[KEY_RAW_INPUT, KEY_SCHEMA], output_keys=[KEY_CLEANED],
             status="ok",
-            checks={"allowed_write": True, "rows": len(cleaned_rows),
+            checks={"rows": len(cleaned_rows),
                     "coerced_cells": coerced},
             message=f"Cleaned {len(cleaned_rows)} rows, coerced {coerced} cells.",
         )
-        return self._next_envelope(envelope, KEY_CLEANED)
+        return AgentResult([KEY_CLEANED], "Normalized rows from granted artifacts.",
+                           {"rows": len(cleaned_rows), "coerced_cells": coerced})
 
     @staticmethod
     def _coerce(value: Any, typ: str) -> Tuple[Any, bool]:
@@ -400,23 +347,19 @@ class TransformAgent(_BaseAgent):
 
 
 # ---------------------------------------------------------------------------
-# ValidationAgent (ShadowJudge) — independent re-read + verdict.
+# ValidationAgent - independent artifact and runner-receipt verdict.
 # ---------------------------------------------------------------------------
 
 class ValidationAgent(_BaseAgent):
-    """The ShadowJudge: independently re-reads the whole chain's artifacts
-    and event log and writes a verdict (ok/warn + reasons). It does not
-    trust the prior agents' self-reports — it re-derives the checks."""
+    """Independently checks the artifact chain and trusted-runner receipts."""
 
     name = "validation_agent"
-    next_agent = ""          # terminal
-    next_handoff_type = ""
-    next_input_keys = ()
-    next_output_contract = ""
-    next_allowed_actions = ()
+
+    def __init__(self, receipts: List[Dict[str, Any]] | None = None) -> None:
+        self.receipts = receipts if receipts is not None else []
 
     def run(self, envelope: HandoffEnvelope, view: StoreView,
-            log: EventLog) -> HandoffEnvelope:
+            log: EventLog) -> AgentResult:
         checks: Dict[str, Any] = {}
         reasons: List[str] = []
 
@@ -428,19 +371,13 @@ class ValidationAgent(_BaseAgent):
             missing = [k for k in expected if k not in present]
             reasons.append(f"chain incomplete: missing {missing}")
 
-        # 2. every write event was allowed by its envelope's actions.
-        # Re-derive: a write is "allowed" if its event recorded
-        # allowed_write=True, OR it is the root intake write (no inbound
-        # envelope to constrain it).
-        write_events = [e for e in log.all()
-                        if e.action == "write_artifact"]
-        bad_writes = [e for e in write_events
-                      if e.agent != "intake_agent"
-                      and not e.checks.get("allowed_write", False)]
-        checks["all_writes_allowed"] = len(bad_writes) == 0
-        if bad_writes:
-            reasons.append(f"writes without allowed_write: "
-                           f"{[e.agent for e in bad_writes]}")
+        # 2. authorization is derived only from runner-owned receipts.
+        bad_receipts = [r for r in self.receipts
+                        if r.get("status") != "ok"
+                        or r.get("contract_result") != "passed"]
+        checks["all_writes_allowed"] = bool(self.receipts) and not bad_receipts
+        if bad_receipts:
+            reasons.append("runner receipts contain authorization failures")
 
         # 3. schema matches cleaned output columns.
         schema_matches = True
@@ -484,15 +421,5 @@ class ValidationAgent(_BaseAgent):
             message=("Chain validated: all checks passed."
                      if ok else "Chain validated with warnings."),
         )
-        # Terminal agent: return an envelope to "human" (no further agent).
-        return HandoffEnvelope(
-            run_id=envelope.run_id,
-            from_agent=self.name,
-            to_agent="human",
-            handoff_type="report",
-            input_keys=[KEY_VERDICT],
-            output_contract="",
-            context_summary=("Validation complete. Verdict available at "
-                             f"{KEY_VERDICT}."),
-            allowed_actions=[],
-        )
+        return AgentResult([KEY_VERDICT], "Validated artifacts and runner receipts.",
+                           {"verdict": verdict["verdict"]})

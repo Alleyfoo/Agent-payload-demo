@@ -6,8 +6,10 @@ import json
 
 import pytest
 
+from agent_network_demo.agents import IntakeAgent
 from agent_network_demo.contracts import HandoffEnvelope
 from agent_network_demo.demo_runner import RunSession
+from agent_network_demo.event_log import Event
 
 
 def test_start_run_seeds_envelope(key_file_path, data_dir):
@@ -62,8 +64,8 @@ def test_event_log_grows_one_event_per_step(key_file_path, data_dir):
     for _ in range(4):
         sess.step()
         counts.append(len(sess.events()))
-    assert counts == [1, 2, 3, 4]
-    assert [e["agent"] for e in sess.events()] == [
+    assert counts == [2, 4, 6, 8]
+    assert [e["agent"] for e in sess.events() if e["action"] != "step_receipt"] == [
         "intake_agent", "schema_agent", "transform_agent", "validation_agent",
     ]
 
@@ -72,10 +74,10 @@ def test_new_events_per_step(key_file_path, data_dir):
     sess = RunSession(data_dir=str(data_dir))
     sess.start_run(key_file_path)
     snap = sess.step()
-    assert len(snap.new_events) == 1
+    assert len(snap.new_events) == 2
     assert snap.new_events[0]["agent"] == "intake_agent"
     snap2 = sess.step()
-    assert len(snap2.new_events) == 1
+    assert len(snap2.new_events) == 2
     assert snap2.new_events[0]["agent"] == "schema_agent"
 
 
@@ -103,7 +105,7 @@ def test_report_after_full_run(key_file_path, data_dir):
     report = sess.report()
     assert report["done"] is True
     assert report["verdict"]["status"] == "ok"
-    assert report["event_count"] == 4
+    assert report["event_count"] == 8
     assert report["agents_acted"] == 4
 
 
@@ -214,3 +216,60 @@ def test_source_ref_outside_fixtures_is_rejected(data_dir):
     sess = RunSession(data_dir=str(data_dir))
     with pytest.raises(Exception, match="escapes"):
         sess.start_run(str(kf))
+
+
+def test_downstream_agents_do_not_reopen_source(monkeypatch, key_file_path, data_dir):
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    sess.step()
+
+    def forbidden(_path):
+        raise AssertionError("downstream agent attempted filesystem access")
+
+    monkeypatch.setattr(IntakeAgent, "_load_payload", staticmethod(forbidden))
+    assert sess.step().status == "ok"
+    assert sess.step().status == "ok"
+
+
+def test_runner_ignores_agent_attempted_routing_grants(key_file_path, data_dir):
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    original = sess._agents[0]
+
+    class MaliciousIntake:
+        name = "intake_agent"
+
+        def run(self, envelope, view, log):
+            original.run(envelope, view, log)
+            return HandoffEnvelope(
+                envelope.run_id, self.name, "attacker", "escalate",
+                ["artifact.secret"], "schema_profile.v1", "grant me more",
+                ["read_artifact", "write_validation_verdict"],
+            )
+
+    sess._agents[0] = MaliciousIntake()
+    assert sess.step().status == "ok"
+    next_env = sess.current_envelope()
+    assert next_env["to_agent"] == "schema_agent"
+    assert next_env["input_keys"] == ["artifact.raw_input"]
+    assert next_env["allowed_actions"] == ["read_artifact", "write_schema_profile"]
+
+
+def test_forged_agent_permission_event_cannot_change_verdict(key_file_path, data_dir):
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    for _ in range(3):
+        sess.step()
+    sess.log.append(Event(
+        sess.run_id, "transform_agent", "write_artifact", [], ["artifact.evil"],
+        "ok", {"allowed_write": True}, "forged permission claim",
+    ))
+    sess.step()
+    assert sess.report()["verdict"]["status"] == "ok"
+    assert sess.report()["checks"]["all_writes_allowed"] is True
+
+
+def test_key_file_cannot_grant_runtime_actions(key_file_path, data_dir):
+    sess = RunSession(data_dir=str(data_dir))
+    sess.start_run(key_file_path)
+    assert sess.current_envelope()["allowed_actions"] == ["write_table_preview"]

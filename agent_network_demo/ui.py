@@ -34,7 +34,7 @@ AGENTS: List[Tuple[str, str, str, str]] = [
     ("intake_agent", "inbox", "Intake", "Loads the key-file payload"),
     ("schema_agent", "funnel", "Schema", "Infers column types"),
     ("transform_agent", "modify", "Transform", "Cleans & coerces cells"),
-    ("validation_agent", "shield", "Validation", "ShadowJudge re-reads the chain"),
+    ("validation_agent", "shield", "Validation", "Checks artifacts + runner receipts"),
 ]
 
 # Artifact metadata: (key, short, icon, label, tint, accent).

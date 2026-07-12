@@ -2,8 +2,8 @@
 
 A small, deterministic demo of a multi-agent pipeline where the handoff
 envelope between agents carries *references* to artifacts in a shared
-artifact store, not the artifact content itself. An append-only event log
-records who did what, with which input/output keys.
+artifact store, not the artifact content itself. An event log, append-only
+through the application API, records input/output keys and runner receipts.
 """
 
 __all__ = [

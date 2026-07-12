@@ -1,10 +1,4 @@
 {
   "run_intent": "ingest_orders",
-  "allowed_actions": [
-    "read_artifact",
-    "write_schema_profile",
-    "write_cleaned_output",
-    "write_validation_verdict"
-  ],
   "source_ref": "sample_payload.csv"
 }

@@ -61,7 +61,7 @@ def test_full_run_via_clicks(app):
     assert app.session_state["session"].done
     rep = app.session_state["session"].report()
     assert rep["verdict"]["status"] == "ok"
-    assert rep["event_count"] == 4
+    assert rep["event_count"] == 8
 
 
 def test_detail_panel_for_artifact(app):

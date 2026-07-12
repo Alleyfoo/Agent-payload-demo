@@ -48,13 +48,24 @@ def test_register_requires_type_field():
         store.register("artifact.x", {"status": "ok"})
 
 
-def test_set_status_updates_without_changing_hash_basis():
+def test_artifact_reads_are_deeply_immutable():
     store = ArtifactStore()
-    store.register("artifact.x", {"type": "t", "status": "pending"})
-    store.set_status("artifact.x", "ok")
-    assert store.get("artifact.x")["status"] == "ok"
-    with pytest.raises(KeyError):
-        store.set_status("artifact.missing", "ok")
+    store.register("artifact.x", {"type": "t", "status": "ok",
+                                   "nested": {"items": [1, 2]}})
+    original_hash = store.get("artifact.x")["source_hash"]
+    returned = store.get("artifact.x")
+    returned["nested"]["items"].append(3)
+    assert store.get("artifact.x")["nested"]["items"] == [1, 2]
+    assert store.get("artifact.x")["source_hash"] == original_hash
+
+
+def test_snapshot_hydration_rejects_invalid_hash():
+    store = ArtifactStore()
+    store.register("artifact.x", {"type": "t", "nested": {"x": 1}})
+    snap = store.to_snapshot()
+    snap["artifact.x"]["nested"]["x"] = 2
+    with pytest.raises(ValueError, match="invalid source_hash"):
+        ArtifactStore.from_snapshot(snap)
 
 
 def test_keys_as_dict_and_summary():
